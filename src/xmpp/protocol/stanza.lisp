@@ -23,7 +23,9 @@
 (defclass message-stanza (stanza)
   ((body    :initarg :body    :accessor message-body    :initform nil)
    (subject :initarg :subject :accessor message-subject :initform nil)
-   (thread  :initarg :thread  :accessor message-thread  :initform nil))
+   (thread  :initarg :thread  :accessor message-thread  :initform nil)
+   (delay   :initarg :delay   :accessor message-delay   :initform nil
+            :documentation "XEP-0203 delay timestamp (ISO 8601 string)"))
   (:documentation "XMPP message stanza."))
 
 (defmethod print-object ((m message-stanza) stream)
@@ -72,20 +74,59 @@
       ((string= name "iq") (parse-iq-stanza el))
       (t el))))  ; Return raw element for unknown types
 
+(defun decode-xml-entities (text)
+  "Decode XML/HTML entities in TEXT."
+  (when text
+    (let ((result text))
+      (setf result (str:replace-all "&amp;" "&" result))
+      (setf result (str:replace-all "&lt;" "<" result))
+      (setf result (str:replace-all "&gt;" ">" result))
+      (setf result (str:replace-all "&quot;" "\"" result))
+      (setf result (str:replace-all "&apos;" "'" result))
+      result)))
+
+(defun find-nested-child (el &rest names)
+  "Find a nested child element by following a path of element names."
+  (let ((current el))
+    (dolist (name names current)
+      (setf current (xml-child current name))
+      (unless current (return nil)))))
+
 (defun parse-message-stanza (el)
-  "Parse a message stanza from XML."
-  (let ((body-el (xml-child el "body"))
-        (subject-el (xml-child el "subject"))
-        (thread-el (xml-child el "thread")))
-    (make-instance 'message-stanza
-                   :id (xml-attr el "id")
-                   :to (xml-attr el "to")
-                   :from (xml-attr el "from")
-                   :type (xml-attr el "type")
-                   :body (when body-el (xml-text body-el))
-                   :subject (when subject-el (xml-text subject-el))
-                   :thread (when thread-el (xml-text thread-el))
-                   :xml el)))
+  "Parse a message stanza from XML.
+   Handles both regular messages and MAM result messages."
+  ;; Check for MAM result (XEP-0313)
+  (let ((result-el (xml-child el "result")))
+    (if result-el
+        ;; MAM result - extract forwarded message
+        (let* ((forwarded-el (xml-child result-el "forwarded"))
+               (delay-el (when forwarded-el (xml-child forwarded-el "delay")))
+               (inner-msg (when forwarded-el (xml-child forwarded-el "message")))
+               (body-el (when inner-msg (xml-child inner-msg "body"))))
+          (when (and inner-msg body-el)
+            (make-instance 'message-stanza
+                           :id (or (xml-attr result-el "id") (xml-attr el "id"))
+                           :to (xml-attr inner-msg "to")
+                           :from (xml-attr inner-msg "from")
+                           :type (or (xml-attr inner-msg "type") "groupchat")
+                           :body (decode-xml-entities (xml-text body-el))
+                           :delay (when delay-el (xml-attr delay-el "stamp"))
+                           :xml el)))
+        ;; Regular message
+        (let ((body-el (xml-child el "body"))
+              (subject-el (xml-child el "subject"))
+              (thread-el (xml-child el "thread"))
+              (delay-el (xml-child el "delay")))
+          (make-instance 'message-stanza
+                         :id (xml-attr el "id")
+                         :to (xml-attr el "to")
+                         :from (xml-attr el "from")
+                         :type (xml-attr el "type")
+                         :body (when body-el (decode-xml-entities (xml-text body-el)))
+                         :subject (when subject-el (decode-xml-entities (xml-text subject-el)))
+                         :thread (when thread-el (xml-text thread-el))
+                         :delay (when delay-el (xml-attr delay-el "stamp"))
+                         :xml el)))))
 
 (defun parse-presence-stanza (el)
   "Parse a presence stanza from XML."

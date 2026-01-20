@@ -10,7 +10,11 @@
   ((id      :initarg :id :reader buffer-id)
    (title   :initarg :title :accessor buffer-title)
    (lines   :initform '() :accessor buffer-lines)
-   (unread  :initform 0   :accessor buffer-unread))
+   (unread  :initform 0   :accessor buffer-unread)
+   (participants :initform (make-hash-table :test 'equal) :accessor buffer-participants
+                 :documentation "Hash table of nick -> presence for MUC rooms")
+   (seen-ids :initform (make-hash-table :test 'equal) :accessor buffer-seen-ids
+             :documentation "Hash table of message IDs to prevent duplicates"))
   (:documentation "A chat buffer containing message lines."))
 
 (defclass roster-item ()

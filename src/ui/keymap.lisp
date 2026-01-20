@@ -22,6 +22,17 @@
 (defparameter +key-tab+ 9)
 (defparameter +key-escape+ 27)
 
+;; Alt+digit keys (escape sequences: ESC followed by digit)
+(defparameter +key-alt-1+ '(27 #\1))
+(defparameter +key-alt-2+ '(27 #\2))
+(defparameter +key-alt-3+ '(27 #\3))
+(defparameter +key-alt-4+ '(27 #\4))
+(defparameter +key-alt-5+ '(27 #\5))
+(defparameter +key-alt-6+ '(27 #\6))
+(defparameter +key-alt-7+ '(27 #\7))
+(defparameter +key-alt-8+ '(27 #\8))
+(defparameter +key-alt-9+ '(27 #\9))
+
 ;;; ============================================================
 ;;; Key Binding Classes
 ;;; ============================================================
@@ -90,14 +101,20 @@
 
 (defmethod binding-matches-p ((b digit-key-binding) key context)
   (declare (ignore context))
-  ;; Digit keys are NOT handled by keymap - they go to input widget
-  ;; Use Alt+digit or Ctrl+digit for buffer jumping instead
-  nil)
+  ;; Match Alt+digit (stored as cons of ESC + digit char)
+  (and (consp key)
+       (eql (car key) 27)
+       (let ((ch (cdr key)))
+         (and (characterp ch)
+              (digit-char-p ch)
+              (<= 1 (digit-char-p ch) 9)))))
 
 (defmethod binding-commands ((b digit-key-binding) context)
-  (declare (ignore context))
-  ;; Disabled - digits go to input
-  nil)
+  ;; Extract digit from Alt+digit key stored in context
+  (let* ((key (getf context :key))
+         (digit (when (consp key) (digit-char-p (cdr key)))))
+    (when digit
+      (list (make-instance 'jump-open-buffer :index digit)))))
 
 (defmethod binding-matches-p ((b enter-key-binding) key context)
   (declare (ignore context))

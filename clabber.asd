@@ -54,7 +54,8 @@
          (:file "bufferbar")
          (:file "chat")
          (:file "status")
-         (:file "input")))
+         (:file "input")
+         (:file "participants")))
        (:file "tui")))
      (:module "app"
       :components

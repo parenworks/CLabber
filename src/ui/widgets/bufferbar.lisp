@@ -4,9 +4,27 @@
 
 (defclass bufferbar-widget (widget) ())
 
+(defun short-buffer-name (id)
+  "Extract short display name from buffer ID (JID).
+   For MUC rooms like #channel%server@bridge, return just #channel.
+   For contacts, return the username part."
+  (let ((name (princ-to-string id)))
+    (cond
+      ;; MUC via IRC bridge: #channel%server@bridge -> #channel
+      ((and (> (length name) 0) (char= (char name 0) #\#))
+       (let ((percent-pos (position #\% name)))
+         (if percent-pos
+             (subseq name 0 percent-pos)
+             ;; No %, try @ for regular MUC
+             (let ((at-pos (position #\@ name)))
+               (if at-pos (subseq name 0 at-pos) name)))))
+      ;; Regular JID: user@domain -> user
+      (t (let ((at-pos (position #\@ name)))
+           (if at-pos (subseq name 0 at-pos) name))))))
+
 (defun format-buffer-pill (id &key focused unread pane-label)
   "Format a buffer indicator pill."
-  (let ((name (princ-to-string id)))
+  (let ((name (short-buffer-name id)))
     (format nil "[~a~a~a~a]"
             (if pane-label (format nil "~a:" pane-label) "")
             name
@@ -61,7 +79,7 @@
                        (color (if (> unread 0) (theme-unread-fg theme) nil)))
                   (emit (format nil "[~d:~a~a]"
                                 n
-                                (princ-to-string id)
+                                (short-buffer-name id)
                                 (if (> unread 0)
                                     (format nil " ~d" unread)
                                     ""))

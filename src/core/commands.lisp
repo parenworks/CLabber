@@ -146,8 +146,9 @@
          (buf (state-ensure-buffer st to :title to))
          ;; Check if target is a MUC room by looking at roster
          (roster-item (find to (state-roster st) :key #'roster-jid :test #'string=))
-         (is-muc (and roster-item (string= (roster-presence roster-item) "muc"))))
-    (buffer-add-line buf (format nil "me: ~a" body))
+         (is-muc (and roster-item (string= (roster-presence roster-item) "muc")))
+         (timestamp (format-timestamp (current-timestamp))))
+    (buffer-add-line buf (format nil "~@[~a ~]me: ~a" timestamp body))
     (if is-muc
         (engine-send-groupchat engine to body)
         (engine-send-message engine to body)))

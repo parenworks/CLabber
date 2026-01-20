@@ -27,6 +27,19 @@
         ;; Debug: log why we didn't send
         (state-log st (format nil "Not sending: text=~s buf=~a" text buf-id)))))
 
+(defun read-key-with-escape (scr)
+  "Read a key, handling escape sequences for Alt+key combinations.
+   Returns either a single key or (ESC . char) for Alt combinations."
+  (let ((key (de.anvi.croatoan:get-char scr)))
+    (when key
+      ;; ESC can be integer 27 or character #\Escape
+      (when (or (eql key 27) (eql key #\Escape))
+        ;; Check if there's a following character (Alt+key)
+        (let ((next (de.anvi.croatoan:get-char scr)))
+          (when next
+            (return-from read-key-with-escape (cons 27 next))))))
+    key))
+
 (defun ui-run (engine)
   "Run the main UI loop."
   (let ((st (make-instance 'app-state))
@@ -42,7 +55,8 @@
                         (cons :chat-a (make-instance 'chat-widget :pane :chat-a))
                         (cons :chat-b (make-instance 'chat-widget :pane :chat-b))
                         (cons :status (make-instance 'status-widget))
-                        (cons :input (make-instance 'input-widget))))
+                        (cons :input (make-instance 'input-widget))
+                        (cons :participants (make-instance 'participants-widget))))
 
     (de.anvi.croatoan:with-screen (scr :input-echoing nil :cursor-visible nil)
       (setf (de.anvi.croatoan:input-blocking scr) nil)
@@ -52,8 +66,8 @@
         (dolist (evt (q-drain (engine-queue engine)))
           (setf st (apply-event evt st ly)))
 
-        ;; 2) Read and process key
-        (let ((key (de.anvi.croatoan:get-char scr)))
+        ;; 2) Read and process key (with Alt+key handling)
+        (let ((key (read-key-with-escape scr)))
           (when key
             ;; Global keymap -> commands
             (let ((cmds (key->commands key st ly ui)))
@@ -70,8 +84,14 @@
             (when (member (layout-focused-pane ly) '(:chat-a :chat-b))
               (handle-input (cdr (assoc :input widgets)) key st ly ui))))
 
-        ;; 3) Render
-        (let ((frames (compute-frames scr ly)))
+        ;; 3) Render - check if current buffer is MUC to show participants
+        (let* ((pane (focused-chat-pane ly))
+               (buf-id (pane-buffer-id ly pane))
+               (roster-item (when buf-id
+                              (find buf-id (state-roster st) 
+                                    :key #'roster-jid :test #'equal)))
+               (is-muc (and roster-item (string= (roster-presence roster-item) "muc")))
+               (frames (compute-frames scr ly :show-participants is-muc)))
           (render-all scr frames st ly ui widgets))
 
         (sleep 0.03)))))

@@ -230,6 +230,38 @@
          (iq (make-iq-stanza "get" :query query :id "bookmarks-private")))
     (xmpp-send conn iq)))
 
+;;; ============================================================
+;;; Message Archive Management (XEP-0313)
+;;; ============================================================
+
+(defparameter +ns-mam+ "urn:xmpp:mam:2"
+  "MAM namespace.")
+
+(defparameter +ns-forward+ "urn:xmpp:forward:0"
+  "Stanza forwarding namespace.")
+
+(defun xmpp-query-mam (conn room-jid &key max)
+  "Query message archive for a MUC room. MAX limits number of results.
+   Uses RSM <before/> to get the LAST N messages (most recent)."
+  (let* ((query-id (format nil "mam-~a" (random 100000)))
+         ;; Build RSM for limiting results - use <before/> empty to get last page
+         (rsm-children (list (make-xml-element "before")))  ; empty <before/> = last page
+         (rsm-children (if max
+                           (cons (make-xml-element "max" :text (princ-to-string max))
+                                 rsm-children)
+                           rsm-children))
+         (rsm (make-xml-element "set"
+                                :namespace "http://jabber.org/protocol/rsm"
+                                :children rsm-children))
+         (query (make-xml-element "query"
+                                  :namespace +ns-mam+
+                                  :attributes `(("queryid" . ,query-id))
+                                  :children (list rsm)))
+         (iq (make-iq-stanza "set" :to room-jid :query query :id query-id)))
+    (debug-log "Sending MAM query to ~a (max=~a, last page)" room-jid max)
+    (xmpp-send conn iq)
+    query-id))
+
 (defun parse-bookmarks (iq-stanza)
   "Parse bookmarks from an IQ result stanza.
    Handles both XEP-0048 (jid on conference) and XEP-0402 (jid on item id)."

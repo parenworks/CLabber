@@ -15,9 +15,13 @@ CLabber is a terminal UI (TUI) XMPP (Jabber) client written in Common Lisp.
 - Scalable buffer bar (shows only open conversations)
 - *Server bookmarks* - Auto-join MUCs from XEP-0048/XEP-0402 bookmarks
 - MUC (Multi-User Chat) support with presence tracking
+- *Room participant list* - Shows members with presence colors
+- *Message history* - XEP-0313 MAM fetches recent messages on room join
+- *Message timestamps* - XEP-0203 Delayed Delivery support
 - IRC bridge support via Biboumi
 - Theming system with colored nicks and customizable UI colors
 - Tokyo Night theme (default) with additional built-in themes
+- Multiple password sources (pass, authinfo.gpg, systemd-creds)
 
 ** Dependencies
 
@@ -216,10 +220,12 @@ clabber/
 - [X] Auto-join MUCs from server bookmarks
 - [X] Roster parsing with namespace support
 
-*** M7: Enhanced Chat Experience
-- [ ] Message timestamps (XEP-0203 Delayed Delivery)
-- [ ] Message history (XEP-0313 MAM)
-- [ ] Room participant list
+*** M7: Enhanced Chat Experience [Complete]
+- [X] Message timestamps (XEP-0203 Delayed Delivery)
+- [X] Message history (XEP-0313 MAM) - Last 50 messages on room join
+- [X] Room participant list with presence colors
+- [X] HTML entity decoding in messages
+- [X] authinfo.gpg password support
 - [ ] Private messages in MUC
 - [ ] Typing notifications (XEP-0085)
 

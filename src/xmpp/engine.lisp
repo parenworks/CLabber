@@ -27,6 +27,12 @@
     (close *debug-log-stream*)
     (setf *debug-log-stream* nil)))
 
+(defun current-timestamp ()
+  "Return current time as ISO 8601 string for message timestamps."
+  (multiple-value-bind (sec min hour day month year) (get-decoded-time)
+    (format nil "~4,'0d-~2,'0d-~2,'0dT~2,'0d:~2,'0d:~2,'0dZ"
+            year month day hour min sec)))
+
 ;;; ============================================================
 ;;; JID Parsing
 ;;; ============================================================
@@ -180,26 +186,44 @@
         ;; Message stanza
         (message-stanza
          (let ((from (stanza-from stanza))
-               (body (message-body stanza)))
+               (body (message-body stanza))
+               (delay (message-delay stanza))
+               (msg-id (stanza-id stanza)))
            (when (and from body (> (length body) 0))
              (debug-log "Message from ~a: ~a" from (subseq body 0 (min 50 (length body))))
              (q-push (engine-queue engine)
-                     (make-instance 'xmpp-message :from from :body body)))))
+                     (make-instance 'xmpp-message 
+                                    :from from 
+                                    :body body
+                                    :timestamp (or delay (current-timestamp))
+                                    :msg-id msg-id)))))
         
         ;; Presence stanza
         (presence-stanza
          (let ((from (stanza-from stanza)))
            (when from
-             (let ((type- (stanza-type stanza))
-                   (show (presence-show stanza)))
+             (let* ((type- (stanza-type stanza))
+                    (show (presence-show stanza))
+                    (bare (bare-jid from))
+                    (resource (jid-resource from))
+                    (presence-show (or show
+                                       (if (and type- (string= type- "unavailable"))
+                                           "offline"
+                                           "available"))))
                (debug-log "Presence from ~a: type=~a show=~a" from type- show)
-               (q-push (engine-queue engine)
-                       (make-instance 'xmpp-presence
-                                      :jid from
-                                      :show (or show
-                                                (if (and type- (string= type- "unavailable"))
-                                                    "offline"
-                                                    "available"))))))))
+               ;; Check if this is MUC presence (has resource = nickname)
+               (if resource
+                   ;; MUC presence - track participant
+                   (q-push (engine-queue engine)
+                           (make-instance 'muc-presence
+                                          :room bare
+                                          :nick resource
+                                          :show presence-show))
+                   ;; Regular contact presence
+                   (q-push (engine-queue engine)
+                           (make-instance 'xmpp-presence
+                                          :jid from
+                                          :show presence-show)))))))
         
         ;; IQ stanza
         (iq-stanza
@@ -286,11 +310,14 @@
       (error () nil))))
 
 (defun engine-join-muc (engine room-jid &optional nickname)
-  "Join a MUC room."
+  "Join a MUC room and request message history."
   (when (engine-connection engine)
     (let ((nick (or nickname (parse-jid (engine-jid engine)))))
       (handler-case
-          (xmpp-join-muc (engine-connection engine) room-jid nick)
+          (progn
+            (xmpp-join-muc (engine-connection engine) room-jid nick)
+            ;; Request last 50 messages from archive
+            (xmpp-query-mam (engine-connection engine) room-jid :max 50))
         (error () nil)))))
 
 (defun engine-set-presence (engine show &optional status)

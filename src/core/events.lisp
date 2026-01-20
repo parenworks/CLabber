@@ -14,12 +14,27 @@
 
 (defclass xmpp-message (event)
   ((from :initarg :from :reader evt-from)
-   (body :initarg :body :reader evt-body)))
+   (body :initarg :body :reader evt-body)
+   (timestamp :initarg :timestamp :initform nil :reader evt-timestamp
+              :documentation "XEP-0203 delay timestamp or current time")
+   (msg-id :initarg :msg-id :initform nil :reader evt-msg-id
+           :documentation "Message ID for deduplication")))
 
 (defclass xmpp-presence (event)
   ((jid :initarg :jid :reader evt-jid)
    (show :initarg :show :reader evt-show)
    (status :initarg :status :initform nil :reader evt-status)))
+
+(defclass muc-presence (event)
+  ((room :initarg :room :reader evt-room
+         :documentation "Bare JID of the MUC room")
+   (nick :initarg :nick :reader evt-nick
+         :documentation "Nickname of the participant")
+   (show :initarg :show :reader evt-show
+         :documentation "Presence status: available, away, dnd, xa, offline")
+   (affiliation :initarg :affiliation :initform nil :reader evt-affiliation)
+   (role :initarg :role :initform nil :reader evt-role))
+  (:documentation "MUC room participant presence update."))
 
 (defclass roster-update (event)
   ((items :initarg :items :reader evt-items)))
@@ -72,6 +87,14 @@
         (subseq jid (1+ slash-pos))
         nil)))
 
+(defun format-timestamp (iso-timestamp)
+  "Format ISO 8601 timestamp to HH:MM for display."
+  (when (and iso-timestamp (>= (length iso-timestamp) 16))
+    ;; ISO format: 2026-01-20T08:30:00Z
+    ;; Extract HH:MM from positions 11-16
+    (let ((time-part (subseq iso-timestamp 11 16)))
+      (format nil "[~a]" time-part))))
+
 (defmethod apply-event ((e xmpp-message) (st app-state) (ly layout))
   (let* ((full-from (evt-from e))
          ;; For MUC messages, use bare JID as buffer key, resource as sender name
@@ -82,13 +105,22 @@
          (is-muc (and roster-item (string= (roster-presence roster-item) "muc")))
          ;; Skip own MUC messages (server echo) - we already show "me:" locally
          (my-nick (state-my-nick st))
-         (is-own-muc-echo (and is-muc my-nick (string= sender my-nick))))
-    ;; Don't display our own MUC messages (already shown as "me:")
-    (unless is-own-muc-echo
-      (let* ((from (if is-muc bare-from full-from))
-             (display-name (if is-muc sender full-from))
-             (buf (state-ensure-buffer st from :title from)))
-        (buffer-add-line buf (format nil "~a: ~a" display-name (evt-body e)))
+         (is-own-muc-echo (and is-muc my-nick (string= sender my-nick)))
+         ;; Get message ID for deduplication
+         (msg-id (evt-msg-id e))
+         (from (if is-muc bare-from full-from))
+         (buf (state-ensure-buffer st from :title from))
+         ;; Check if we've already seen this message
+         (already-seen (and msg-id 
+                            (gethash msg-id (buffer-seen-ids buf)))))
+    ;; Don't display duplicates or our own MUC echo
+    (unless (or is-own-muc-echo already-seen)
+      ;; Mark message as seen
+      (when msg-id
+        (setf (gethash msg-id (buffer-seen-ids buf)) t))
+      (let* ((display-name (if is-muc sender full-from))
+             (timestamp (format-timestamp (evt-timestamp e))))
+        (buffer-add-line buf (format nil "~@[~a ~]~a: ~a" timestamp display-name (evt-body e)))
         (cond
           ((buffer-visible-p ly from)
            (setf (buffer-unread buf) 0)
@@ -111,6 +143,19 @@
          (item (find jid (state-roster st) :key #'roster-jid :test #'string=)))
     (when item
       (setf (roster-presence item) (or (evt-show e) "available"))))
+  st)
+
+(defmethod apply-event ((e muc-presence) (st app-state) (ly layout))
+  (declare (ignore ly))
+  (let* ((room (evt-room e))
+         (nick (evt-nick e))
+         (show (evt-show e))
+         ;; Ensure buffer exists for MUC room
+         (buf (ensure-buffer st room :title room)))
+    (let ((participants (buffer-participants buf)))
+      (if (string= show "offline")
+          (remhash nick participants)
+          (setf (gethash nick participants) show))))
   st)
 
 (defmethod apply-event ((e roster-update) (st app-state) (ly layout))

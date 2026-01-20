@@ -185,12 +185,12 @@ Returns plist with :login and :password, or nil if not found."
     (t pw)))
 
 (defun get-account-password (ac)
-  "Get password for account config, resolving from various sources."
+  "Get password for account config, resolving from various sources.
+   For authinfo lookup, uses JID domain (not connection host) as machine."
   (let* ((jid (account-config-jid ac))
-         (host (or (account-config-host ac)
-                   (when jid (subseq jid (1+ (position #\@ jid))))))
+         (jid-domain (when jid (subseq jid (1+ (position #\@ jid)))))
          (login (when jid (subseq jid 0 (position #\@ jid)))))
-    (resolve-password (account-config-password ac) host login)))
+    (resolve-password (account-config-password ac) jid-domain login)))
 
 ;;; ============================================================
 ;;; Configuration Serialization
