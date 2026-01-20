@@ -281,19 +281,198 @@
 ;;; Bundle Generation (for PEP publishing)
 ;;; ============================================================
 
-(defun device-bundle-xml (device)
-  "Generate XML element for device's key bundle (for PEP publishing)."
+;;; ============================================================
+;;; PEP Publishing (XEP-0163)
+;;; ============================================================
+
+(defparameter +ns-pubsub+ "http://jabber.org/protocol/pubsub"
+  "PubSub namespace")
+
+(defun make-device-list-xml (device-ids)
+  "Create XML for device list publication.
+   DEVICE-IDS is a list of integer device IDs."
+  (make-xml-element "devices"
+                    :namespace +omemo-ns+
+                    :children (mapcar (lambda (id)
+                                        (make-xml-element "device"
+                                                          :attributes `(("id" . ,(princ-to-string id)))))
+                                      device-ids)))
+
+(defun make-bundle-xml (device)
+  "Create XML for key bundle publication."
   (let ((ik (device-identity-key device))
-        (spk (device-signed-prekey device)))
-    `(("bundle" . (("xmlns" . ,+omemo-ns+)))
-      (("ik" . nil) ,(bytes-to-base64 (identity-public-key ik)))
-      (("spk" . (("id" . ,(princ-to-string (signed-prekey-id spk)))))
-       ,(bytes-to-base64 (signed-prekey-public spk)))
-      (("spks" . nil) ,(bytes-to-base64 (signed-prekey-signature spk)))
-      ,@(let ((pks nil))
-          (maphash (lambda (id pk)
-                     (push `(("pk" . (("id" . ,(princ-to-string id))))
-                             ,(bytes-to-base64 (prekey-public pk)))
-                           pks))
-                   (device-prekeys device))
-          pks))))
+        (spk (device-signed-prekey device))
+        (prekey-elements nil))
+    ;; Build prekey elements
+    (maphash (lambda (id pk)
+               (push (make-xml-element "pk"
+                                       :attributes `(("id" . ,(princ-to-string id)))
+                                       :text (bytes-to-base64 (prekey-public pk)))
+                     prekey-elements))
+             (device-prekeys device))
+    ;; Build bundle element
+    (make-xml-element "bundle"
+                      :namespace +omemo-ns+
+                      :children (list
+                                 (make-xml-element "ik"
+                                                   :text (bytes-to-base64 (identity-public-key ik)))
+                                 (make-xml-element "spk"
+                                                   :attributes `(("id" . ,(princ-to-string (signed-prekey-id spk))))
+                                                   :text (bytes-to-base64 (signed-prekey-public spk)))
+                                 (make-xml-element "spks"
+                                                   :text (bytes-to-base64 (signed-prekey-signature spk)))
+                                 (make-xml-element "prekeys"
+                                                   :children prekey-elements)))))
+
+(defun make-pep-publish-iq (node item-id payload)
+  "Create IQ stanza for PEP publication.
+   NODE is the PEP node name, ITEM-ID is the item identifier, PAYLOAD is the XML element."
+  (let* ((item (make-xml-element "item"
+                                 :attributes `(("id" . ,item-id))
+                                 :children (list payload)))
+         (publish (make-xml-element "publish"
+                                    :attributes `(("node" . ,node))
+                                    :children (list item)))
+         (pubsub (make-xml-element "pubsub"
+                                   :namespace +ns-pubsub+
+                                   :children (list publish))))
+    (make-iq-stanza "set" :query pubsub :id (format nil "pep-~a" (random 100000)))))
+
+(defun publish-omemo-device-list (conn device-ids)
+  "Publish OMEMO device list to PEP.
+   DEVICE-IDS is a list of our device IDs."
+  (let* ((devices-xml (make-device-list-xml device-ids))
+         (iq (make-pep-publish-iq +omemo-devices-node+ "current" devices-xml)))
+    (debug-log "Publishing OMEMO device list: ~a" device-ids)
+    (xmpp-send conn iq)))
+
+(defun publish-omemo-bundle (conn device)
+  "Publish OMEMO key bundle to PEP for DEVICE."
+  (let* ((device-id (device-id device))
+         (bundle-xml (make-bundle-xml device))
+         (node (format nil "~a:~a" +omemo-bundles-node+ device-id))
+         (iq (make-pep-publish-iq node (princ-to-string device-id) bundle-xml)))
+    (debug-log "Publishing OMEMO bundle for device ~a" device-id)
+    (xmpp-send conn iq)))
+
+(defun publish-omemo-keys (conn device)
+  "Publish both device list and bundle for DEVICE."
+  (publish-omemo-device-list conn (list (device-id device)))
+  (publish-omemo-bundle conn device))
+
+;;; ============================================================
+;;; Fetching Others' Keys
+;;; ============================================================
+
+(defun make-pep-items-iq (to node)
+  "Create IQ stanza to fetch PEP items from TO at NODE."
+  (let* ((items (make-xml-element "items"
+                                  :attributes `(("node" . ,node))))
+         (pubsub (make-xml-element "pubsub"
+                                   :namespace +ns-pubsub+
+                                   :children (list items))))
+    (make-iq-stanza "get" :to to :query pubsub :id (format nil "pep-get-~a" (random 100000)))))
+
+(defun fetch-omemo-device-list (conn jid)
+  "Request OMEMO device list for JID."
+  (let ((iq (make-pep-items-iq jid +omemo-devices-node+)))
+    (debug-log "Fetching OMEMO device list for ~a" jid)
+    (xmpp-send conn iq)))
+
+(defun fetch-omemo-bundle (conn jid device-id)
+  "Request OMEMO bundle for JID's DEVICE-ID."
+  (let* ((node (format nil "~a:~a" +omemo-bundles-node+ device-id))
+         (iq (make-pep-items-iq jid node)))
+    (debug-log "Fetching OMEMO bundle for ~a device ~a" jid device-id)
+    (xmpp-send conn iq)))
+
+;;; ============================================================
+;;; Parsing Received Keys
+;;; ============================================================
+
+(defclass remote-bundle ()
+  ((jid :initarg :jid :accessor bundle-jid
+        :documentation "JID of the bundle owner")
+   (device-id :initarg :device-id :accessor bundle-device-id
+              :documentation "Device ID")
+   (identity-key :initarg :identity-key :accessor bundle-identity-key
+                 :documentation "Ed25519 public key (bytes)")
+   (signed-prekey-id :initarg :signed-prekey-id :accessor bundle-signed-prekey-id)
+   (signed-prekey :initarg :signed-prekey :accessor bundle-signed-prekey
+                  :documentation "X25519 public key (bytes)")
+   (signed-prekey-sig :initarg :signed-prekey-sig :accessor bundle-signed-prekey-sig
+                      :documentation "Signature (bytes)")
+   (prekeys :initarg :prekeys :accessor bundle-prekeys
+            :documentation "Hash table of id -> X25519 public key (bytes)"))
+  (:documentation "Remote user's OMEMO key bundle."))
+
+(defvar *remote-bundles* (make-hash-table :test 'equal)
+  "Cache of remote bundles: (jid . device-id) -> remote-bundle")
+
+(defvar *remote-device-lists* (make-hash-table :test 'equal)
+  "Cache of remote device lists: jid -> list of device-ids")
+
+(defun parse-device-list-xml (xml-element)
+  "Parse device list from PEP XML. Returns list of device IDs."
+  (let ((devices-el (or (xml-child xml-element "devices")
+                        xml-element))
+        (device-ids nil))
+    (when devices-el
+      (dolist (child (xml-children devices-el))
+        (when (and (listp child) 
+                   (string= (xml-name child) "device"))
+          (let ((id-str (xml-attr child "id")))
+            (when id-str
+              (push (parse-integer id-str) device-ids))))))
+    (nreverse device-ids)))
+
+(defun parse-bundle-xml (xml-element jid device-id)
+  "Parse key bundle from PEP XML. Returns remote-bundle instance."
+  (let ((bundle-el (or (xml-child xml-element "bundle")
+                       xml-element)))
+    (when bundle-el
+      (let ((ik-el (xml-child bundle-el "ik"))
+            (spk-el (xml-child bundle-el "spk"))
+            (spks-el (xml-child bundle-el "spks"))
+            (prekeys-el (xml-child bundle-el "prekeys"))
+            (prekeys (make-hash-table)))
+        ;; Parse prekeys
+        (when prekeys-el
+          (dolist (child (xml-children prekeys-el))
+            (when (and (listp child)
+                       (string= (xml-name child) "pk"))
+              (let ((id-str (xml-attr child "id"))
+                    (key-b64 (xml-text child)))
+                (when (and id-str key-b64)
+                  (setf (gethash (parse-integer id-str) prekeys)
+                        (base64-to-bytes key-b64)))))))
+        ;; Build bundle
+        (when (and ik-el spk-el spks-el)
+          (make-instance 'remote-bundle
+                         :jid jid
+                         :device-id device-id
+                         :identity-key (base64-to-bytes (xml-text ik-el))
+                         :signed-prekey-id (parse-integer (xml-attr spk-el "id"))
+                         :signed-prekey (base64-to-bytes (xml-text spk-el))
+                         :signed-prekey-sig (base64-to-bytes (xml-text spks-el))
+                         :prekeys prekeys))))))
+
+(defun cache-device-list (jid device-ids)
+  "Cache device list for JID."
+  (setf (gethash jid *remote-device-lists*) device-ids)
+  (debug-log "Cached device list for ~a: ~a" jid device-ids))
+
+(defun cache-bundle (bundle)
+  "Cache remote bundle."
+  (let ((key (cons (bundle-jid bundle) (bundle-device-id bundle))))
+    (setf (gethash key *remote-bundles*) bundle)
+    (debug-log "Cached bundle for ~a device ~a" 
+               (bundle-jid bundle) (bundle-device-id bundle))))
+
+(defun get-cached-device-list (jid)
+  "Get cached device list for JID, or NIL."
+  (gethash jid *remote-device-lists*))
+
+(defun get-cached-bundle (jid device-id)
+  "Get cached bundle for JID and DEVICE-ID, or NIL."
+  (gethash (cons jid device-id) *remote-bundles*))

@@ -126,6 +126,10 @@
                        ;; Request bookmarks
                        (xmpp-get-bookmarks conn)
                        (debug-log "Requested bookmarks")
+                       ;; Publish OMEMO keys
+                       (when *omemo-device*
+                         (publish-omemo-keys conn *omemo-device*)
+                         (debug-log "Published OMEMO keys"))
                        ;; Config MUCs are now a fallback - only used if no server bookmarks
                        ;; Store them for later use if bookmarks fail
                        (setf (engine-config-mucs eng) muc-rooms)
@@ -345,3 +349,11 @@
     (handler-case
         (xmpp-send-chat-state (engine-connection engine) to state :type type)
       (error () nil))))
+
+(defun engine-publish-omemo-keys (engine)
+  "Publish OMEMO device list and key bundle to PEP."
+  (when (and (engine-connection engine) *omemo-device*)
+    (handler-case
+        (publish-omemo-keys (engine-connection engine) *omemo-device*)
+      (error (e)
+        (debug-log "Error publishing OMEMO keys: ~a" e)))))
