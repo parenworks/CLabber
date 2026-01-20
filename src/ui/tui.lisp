@@ -38,14 +38,24 @@
   "Read a key, handling escape sequences for Alt+key combinations.
    Returns either a single key or (ESC . char) for Alt combinations."
   (let ((key (de.anvi.croatoan:get-char scr)))
-    (when key
+    (when (and key (not (eql key -1)))
+      ;; Debug: log actual key presses (not -1 which is "no key")
+      (debug-log "Key received: ~s (type: ~a)" key (type-of key))
+      ;; Check for meta bit (Alt sets 8th bit, so values 128-255)
+      (when (and (integerp key) (>= key 128) (<= key 255))
+        (let ((base-char (code-char (- key 128))))
+          (debug-log "Meta key detected: ~s -> ~s" key base-char)
+          (return-from read-key-with-escape (cons 27 base-char))))
       ;; ESC can be integer 27 or character #\Escape
       (when (or (eql key 27) (eql key #\Escape))
-        ;; Check if there's a following character (Alt+key)
+        ;; Wait briefly for following character (Alt+key sends ESC then char quickly)
+        (sleep 0.01)
         (let ((next (de.anvi.croatoan:get-char scr)))
-          (when next
-            (return-from read-key-with-escape (cons 27 next))))))
-    key))
+          (when (and next (not (eql next -1)))
+            (debug-log "ESC sequence: 27 + ~s" next)
+            (return-from read-key-with-escape (cons 27 next)))))
+      (return-from read-key-with-escape key))
+    nil))
 
 (defun ui-run (engine)
   "Run the main UI loop."

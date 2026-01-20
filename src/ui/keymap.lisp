@@ -23,20 +23,21 @@
 (defparameter +key-escape+ 27)
 
 ;; Alt+digit keys (escape sequences: ESC followed by digit)
-(defparameter +key-alt-1+ '(27 #\1))
-(defparameter +key-alt-2+ '(27 #\2))
-(defparameter +key-alt-3+ '(27 #\3))
-(defparameter +key-alt-4+ '(27 #\4))
-(defparameter +key-alt-5+ '(27 #\5))
-(defparameter +key-alt-6+ '(27 #\6))
-(defparameter +key-alt-7+ '(27 #\7))
-(defparameter +key-alt-8+ '(27 #\8))
-(defparameter +key-alt-9+ '(27 #\9))
+;; Note: read-key-with-escape returns (cons 27 char), not a list
+(defparameter +key-alt-1+ (cons 27 #\1))
+(defparameter +key-alt-2+ (cons 27 #\2))
+(defparameter +key-alt-3+ (cons 27 #\3))
+(defparameter +key-alt-4+ (cons 27 #\4))
+(defparameter +key-alt-5+ (cons 27 #\5))
+(defparameter +key-alt-6+ (cons 27 #\6))
+(defparameter +key-alt-7+ (cons 27 #\7))
+(defparameter +key-alt-8+ (cons 27 #\8))
+(defparameter +key-alt-9+ (cons 27 #\9))
 
 ;; Alt+letter keys for participant navigation
-(defparameter +key-alt-j+ '(27 #\j))  ; Participant down
-(defparameter +key-alt-k+ '(27 #\k))  ; Participant up
-(defparameter +key-alt-o+ '(27 #\o))  ; Open private chat with participant
+(defparameter +key-alt-j+ (cons 27 #\j))  ; Participant down
+(defparameter +key-alt-k+ (cons 27 #\k))  ; Participant up
+(defparameter +key-alt-o+ (cons 27 #\o))  ; Open private chat with participant
 
 ;;; ============================================================
 ;;; Key Binding Classes
@@ -109,20 +110,24 @@
                (binding-command-class b)
                (binding-command-args b))))
 
+(defun key-to-digit (ch)
+  "Convert a key (character or integer) to digit 1-9, or NIL."
+  (cond
+    ((characterp ch) (let ((d (digit-char-p ch))) (when (and d (<= 1 d 9)) d)))
+    ((integerp ch) (let ((d (- ch 48))) (when (<= 1 d 9) d)))  ; 48 = ASCII '0'
+    (t nil)))
+
 (defmethod binding-matches-p ((b digit-key-binding) key context)
   (declare (ignore context))
-  ;; Match Alt+digit (stored as cons of ESC + digit char)
+  ;; Match Alt+digit (stored as cons of ESC + digit char/int)
   (and (consp key)
        (eql (car key) 27)
-       (let ((ch (cdr key)))
-         (and (characterp ch)
-              (digit-char-p ch)
-              (<= 1 (digit-char-p ch) 9)))))
+       (key-to-digit (cdr key))))
 
 (defmethod binding-commands ((b digit-key-binding) context)
   ;; Extract digit from Alt+digit key stored in context
   (let* ((key (getf context :key))
-         (digit (when (consp key) (digit-char-p (cdr key)))))
+         (digit (when (consp key) (key-to-digit (cdr key)))))
     (when digit
       (list (make-instance 'jump-open-buffer :index digit)))))
 
@@ -149,9 +154,22 @@
     (list (make-instance 'roster-move :dir dir)
           (make-instance 'roster-open-selection))))
 
+(defun alt-key-equal (expected actual)
+  "Compare Alt+key bindings, handling char vs int mismatch.
+   EXPECTED is (27 . char), ACTUAL may be (27 . int)."
+  (and (consp expected) (consp actual)
+       (eql (car expected) (car actual))
+       (let ((exp-ch (cdr expected))
+             (act-ch (cdr actual)))
+         (or (eql exp-ch act-ch)
+             (and (characterp exp-ch) (integerp act-ch)
+                  (eql (char-code exp-ch) act-ch))
+             (and (integerp exp-ch) (characterp act-ch)
+                  (eql exp-ch (char-code act-ch)))))))
+
 (defmethod binding-matches-p ((b alt-key-binding) key context)
   (declare (ignore context))
-  (equal (binding-key b) key))
+  (alt-key-equal (binding-key b) key))
 
 (defmethod binding-commands ((b alt-key-binding) context)
   (declare (ignore context))
