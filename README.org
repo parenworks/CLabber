@@ -1,0 +1,209 @@
+#+TITLE: CLabber - A Common Lisp XMPP Client
+#+AUTHOR: Glenn Thompson
+#+OPTIONS: toc:2
+
+* CLabber
+
+CLabber is a terminal UI (TUI) XMPP (Jabber) client written in Common Lisp.
+
+** Features
+
+- CLOS-first architecture for maintainability and extensibility
+- Event-driven design with thread-safe message passing
+- Widget-based UI with roster, buffer bar, and split chat panes
+- Scalable buffer bar (shows only open conversations)
+- MUC (Multi-User Chat) support with auto-join from config
+- IRC bridge support via Biboumi
+- Theming system with colored nicks and customizable UI colors
+- Tokyo Night theme (default) with additional built-in themes
+
+** Dependencies
+
+- =cl-ngxmpp-client= - XMPP protocol implementation
+- =croatoan= - ncurses TUI bindings
+- =bordeaux-threads= - Threading primitives
+- =alexandria= - Common utilities
+- =local-time= - Timestamp handling
+- =str= - String utilities
+
+** Installation
+
+#+begin_src bash
+# Clone the repository
+git clone https://github.com/yourusername/clabber.git
+cd clabber
+
+# Load in SBCL
+sbcl --load clabber.asd
+#+end_src
+
+#+begin_src lisp
+;; In the REPL
+(ql:quickload :clabber)
+(clabber:main)
+#+end_src
+
+** Building
+
+#+begin_src bash
+# Build standalone executable
+make
+
+# Run the executable
+./clabber
+
+# Or run in development mode (no executable)
+make dev
+#+end_src
+
+** Configuration
+
+Configuration is stored in =~/.config/clabber/config.lisp=:
+
+#+begin_src lisp
+(:clabber-config
+ :version 1
+ :default-account "main"
+ :roster-width 28
+ :auto-reconnect t
+ :auto-open-on-message nil
+ :theme "tokyo-night"
+ :accounts
+ ((:name "main"
+   :jid "user@example.com"
+   :password (:pass "xmpp/example.com")  ; Use pass(1)
+   :port 5222
+   :use-tls t
+   :autoconnect t
+   :mucs ("room@conference.example.com"
+          "#channel%irc.libera.chat@biboumi.example.com"))))
+#+end_src
+
+See =docs/example-config.lisp= for more examples.
+
+*** Password Sources
+
+CLabber supports multiple password sources:
+
+| Source | Config Value | Description |
+|--------+--------------+-------------|
+| pass(1) | =(:pass "path/to/entry")= | Password manager |
+| authinfo | =:authinfo= | ~/.authinfo or ~/.authinfo.gpg |
+| systemd-creds | =(:systemd-creds "/path/to/file.cred")= | Encrypted credentials |
+| Plain text | ="password"= | Not recommended |
+| Client cert | =:sasl :external= + =:client-cert "/path/to/cert.pem"= | SASL EXTERNAL |
+
+*** Themes
+
+Built-in themes: =dark=, =light=, =solarized=, =minimal=, =ascii=, =rounded=, =tokyo-night=
+
+Custom themes can be defined in =~/.config/clabber/themes/theme.lisp=.
+See =docs/example-theme.lisp= for examples.
+
+** Keybindings
+
+*** Global
+| Key   | Action                              |
+|-------+-------------------------------------|
+| C-q   | Quit                                |
+| C-w   | Toggle split pane                   |
+| C-t   | Toggle split orientation (V/H)      |
+| Tab   | Cycle focus (roster -> chat-a -> chat-b) |
+| C-k   | Close current buffer                |
+| 1-9   | Jump to Nth open buffer             |
+
+*** Navigation
+| Key   | Action                              |
+|-------+-------------------------------------|
+| C-n   | Next roster item (and open buffer)  |
+| C-p   | Previous roster item (and open buffer) |
+| C-x   | Swap split pane buffers             |
+| Enter | Open selected contact (roster) / Send message (chat) |
+
+*** Input Line
+| Key   | Action                              |
+|-------+-------------------------------------|
+| C-u   | Clear line                          |
+| Bksp  | Delete character                    |
+
+** Architecture
+
+#+begin_src text
+clabber/
+  clabber.asd
+  src/
+    package.lisp
+    config.lisp
+    core/
+      classes.lisp      ; Core CLOS classes (buffer, roster-item, app-state, layout)
+      queue.lisp        ; Thread-safe event queue
+      events.lisp       ; Event classes + apply-event methods
+      commands.lisp     ; Command classes + execute methods
+      dispatch.lisp     ; Command execution
+      log.lisp          ; Logging utilities
+    xmpp/
+      engine.lisp       ; XMPP connection management
+      handlers.lisp     ; Stanza handlers -> events
+      reconnect.lisp    ; Reconnection policy
+    ui/
+      classes.lisp      ; Widget base class
+      theme.lisp        ; Theme system
+      layout.lisp       ; Frame computation
+      keymap.lisp       ; Key bindings
+      tui.lisp          ; Main loop
+      widgets/
+        roster.lisp     ; Roster pane
+        bufferbar.lisp  ; Buffer bar
+        chat.lisp       ; Chat pane
+        status.lisp     ; Status bar
+        input.lisp      ; Input line
+    app/
+      main.lisp         ; Entry point
+#+end_src
+
+** Roadmap
+
+*** M0: Bootable UI skeleton [Complete]
+- [X] Roster pane renders
+- [X] Buffer bar shows active panes
+- [X] Chat pane shows system buffer
+- [X] Split toggles work (C-w, C-t)
+- [X] Focus cycling works (Tab)
+- [X] Input widget accepts text
+
+*** M1: Basic engine wiring [Complete]
+- [X] Connect via cl-xmpp
+- [X] Push connection lifecycle events
+- [X] System buffer logs connection status
+
+*** M2: Direct Messages [Complete]
+- [X] Roster populated from server
+- [X] Open roster JID in chat pane
+- [X] Send/receive messages
+
+*** M3: Presence + unread polish [Complete]
+- [X] Presence updates in roster
+- [X] Unread badges in buffer bar
+- [X] Read/unread resets on visibility
+
+*** M4: MUC basics [Complete]
+- [X] Join rooms from config
+- [X] Room buffers in open buffers
+- [X] Send/receive groupchat messages
+- [X] IRC bridge support (Biboumi)
+
+*** M5: Theming [Complete]
+- [X] Theme system with customizable colors
+- [X] Nick colors in chat
+- [X] Presence colors in roster
+- [X] Tokyo Night default theme
+
+*** M6: Future
+- [ ] XEP-0048 bookmark parsing
+- [ ] Room participant list
+- [ ] Private messages in MUC
+- [ ] Message history (MAM)
+
+** License
+
+MIT
