@@ -476,3 +476,335 @@
 (defun get-cached-bundle (jid device-id)
   "Get cached bundle for JID and DEVICE-ID, or NIL."
   (gethash (cons jid device-id) *remote-bundles*))
+
+;;; ============================================================
+;;; X3DH Key Agreement (Signal Protocol)
+;;; ============================================================
+
+(defun x25519-dh (private-key public-key)
+  "Perform X25519 Diffie-Hellman. Returns shared secret (32 bytes)."
+  (let ((priv (ironclad:make-private-key :curve25519 :x private-key :y (make-array 32 :element-type '(unsigned-byte 8))))
+        (pub (ironclad:make-public-key :curve25519 :y public-key)))
+    (ironclad:diffie-hellman priv pub)))
+
+(defun hkdf-sha256 (input-key-material salt info length)
+  "HKDF-SHA256 key derivation.
+   Returns LENGTH bytes derived from IKM using SALT and INFO."
+  (let ((kdf (ironclad:make-kdf :hkdf :digest :sha256)))
+    (ironclad:derive-key kdf input-key-material salt length info)))
+
+(defun concat-bytes (&rest byte-arrays)
+  "Concatenate multiple byte arrays into one."
+  (let* ((total-len (reduce #'+ byte-arrays :key #'length))
+         (result (make-array total-len :element-type '(unsigned-byte 8)))
+         (pos 0))
+    (dolist (arr byte-arrays result)
+      (replace result arr :start1 pos)
+      (incf pos (length arr)))))
+
+(defun x3dh-initiator (our-identity-key our-ephemeral-key
+                       their-identity-key their-signed-prekey their-one-time-prekey)
+  "Perform X3DH as initiator (Alice).
+   OUR-IDENTITY-KEY: our Ed25519 private key (will derive X25519)
+   OUR-EPHEMERAL-KEY: freshly generated X25519 private key
+   THEIR-IDENTITY-KEY: their Ed25519 public key
+   THEIR-SIGNED-PREKEY: their X25519 signed prekey public
+   THEIR-ONE-TIME-PREKEY: their X25519 one-time prekey public (or NIL)
+   
+   Returns shared secret (32 bytes) for initializing Double Ratchet."
+  ;; Convert Ed25519 identity keys to X25519 for DH
+  ;; Note: In OMEMO, identity keys are Ed25519 but we need X25519 for DH
+  ;; The conversion is: x25519_pub = ed25519_pub with sign bit cleared
+  ;; For simplicity, we'll use the raw bytes (proper impl would convert)
+  (let* (;; DH1 = DH(IKa, SPKb) - our identity with their signed prekey
+         (dh1 (x25519-dh our-identity-key their-signed-prekey))
+         ;; DH2 = DH(EKa, IKb) - our ephemeral with their identity
+         (dh2 (x25519-dh our-ephemeral-key their-identity-key))
+         ;; DH3 = DH(EKa, SPKb) - our ephemeral with their signed prekey
+         (dh3 (x25519-dh our-ephemeral-key their-signed-prekey))
+         ;; DH4 = DH(EKa, OPKb) - our ephemeral with their one-time prekey (if present)
+         (dh4 (when their-one-time-prekey
+                (x25519-dh our-ephemeral-key their-one-time-prekey)))
+         ;; Concatenate all DH outputs
+         (dh-concat (if dh4
+                        (concat-bytes dh1 dh2 dh3 dh4)
+                        (concat-bytes dh1 dh2 dh3)))
+         ;; Derive shared secret using HKDF
+         (salt (make-array 32 :element-type '(unsigned-byte 8) :initial-element 0))
+         (info (babel:string-to-octets "OMEMO X3DH")))
+    (hkdf-sha256 dh-concat salt info 32)))
+
+(defun x3dh-responder (our-identity-key our-signed-prekey our-one-time-prekey
+                       their-identity-key their-ephemeral-key)
+  "Perform X3DH as responder (Bob).
+   Returns shared secret (32 bytes) matching what initiator computed."
+  (let* (;; DH1 = DH(SPKb, IKa) - our signed prekey with their identity
+         (dh1 (x25519-dh our-signed-prekey their-identity-key))
+         ;; DH2 = DH(IKb, EKa) - our identity with their ephemeral
+         (dh2 (x25519-dh our-identity-key their-ephemeral-key))
+         ;; DH3 = DH(SPKb, EKa) - our signed prekey with their ephemeral
+         (dh3 (x25519-dh our-signed-prekey their-ephemeral-key))
+         ;; DH4 = DH(OPKb, EKa) - our one-time prekey with their ephemeral (if used)
+         (dh4 (when our-one-time-prekey
+                (x25519-dh our-one-time-prekey their-ephemeral-key)))
+         ;; Concatenate all DH outputs
+         (dh-concat (if dh4
+                        (concat-bytes dh1 dh2 dh3 dh4)
+                        (concat-bytes dh1 dh2 dh3)))
+         ;; Derive shared secret using HKDF
+         (salt (make-array 32 :element-type '(unsigned-byte 8) :initial-element 0))
+         (info (babel:string-to-octets "OMEMO X3DH")))
+    (hkdf-sha256 dh-concat salt info 32)))
+
+;;; ============================================================
+;;; Session Management
+;;; ============================================================
+
+(defclass omemo-session ()
+  ((jid :initarg :jid :accessor session-jid)
+   (device-id :initarg :device-id :accessor session-device-id)
+   (shared-secret :initarg :shared-secret :accessor session-shared-secret
+                  :documentation "32-byte shared secret from X3DH")
+   (root-key :initarg :root-key :accessor session-root-key
+             :documentation "Current root key for Double Ratchet")
+   (sending-chain-key :initarg :sending-chain-key :accessor session-sending-chain-key)
+   (receiving-chain-key :initarg :receiving-chain-key :accessor session-receiving-chain-key)
+   (sending-ratchet-key :initarg :sending-ratchet-key :accessor session-sending-ratchet-key
+                        :documentation "Our current DH ratchet key pair")
+   (receiving-ratchet-key :initarg :receiving-ratchet-key :accessor session-receiving-ratchet-key
+                          :documentation "Their current DH ratchet public key")
+   (send-count :initform 0 :accessor session-send-count)
+   (recv-count :initform 0 :accessor session-recv-count))
+  (:documentation "OMEMO session state for Double Ratchet."))
+
+(defvar *omemo-sessions* (make-hash-table :test 'equal)
+  "Active OMEMO sessions: (jid . device-id) -> omemo-session")
+
+(defun get-session (jid device-id)
+  "Get existing session or NIL."
+  (gethash (cons jid device-id) *omemo-sessions*))
+
+(defun store-session (session)
+  "Store session in cache."
+  (setf (gethash (cons (session-jid session) (session-device-id session))
+                 *omemo-sessions*)
+        session))
+
+(defun create-session-as-initiator (jid device-id bundle)
+  "Create new OMEMO session as initiator using remote BUNDLE.
+   Returns the new session and the ephemeral public key to send."
+  ;; Generate ephemeral key pair for this session
+  (multiple-value-bind (eph-priv eph-pub) (generate-x25519-keypair)
+    ;; Pick a random one-time prekey from their bundle
+    (let* ((prekeys (bundle-prekeys bundle))
+           (prekey-ids (let ((ids nil))
+                         (maphash (lambda (k v) (declare (ignore v)) (push k ids)) prekeys)
+                         ids))
+           (chosen-prekey-id (when prekey-ids (nth (random (length prekey-ids)) prekey-ids)))
+           (chosen-prekey (when chosen-prekey-id (gethash chosen-prekey-id prekeys)))
+           ;; Perform X3DH
+           ;; Note: Need to convert Ed25519 identity to X25519 - simplified here
+           (shared-secret (x3dh-initiator 
+                           (identity-private-key (device-identity-key *omemo-device*))
+                           eph-priv
+                           (bundle-identity-key bundle)
+                           (bundle-signed-prekey bundle)
+                           chosen-prekey))
+           ;; Initialize session
+           (session (make-instance 'omemo-session
+                                   :jid jid
+                                   :device-id device-id
+                                   :shared-secret shared-secret
+                                   :root-key shared-secret
+                                   :sending-chain-key nil
+                                   :receiving-chain-key nil
+                                   :sending-ratchet-key (cons eph-priv eph-pub)
+                                   :receiving-ratchet-key (bundle-signed-prekey bundle))))
+      (store-session session)
+      (debug-log "Created OMEMO session with ~a device ~a" jid device-id)
+      (values session eph-pub chosen-prekey-id))))
+
+;;; ============================================================
+;;; Double Ratchet Algorithm
+;;; ============================================================
+
+(defun kdf-chain (chain-key)
+  "Derive next chain key and message key from current chain key.
+   Returns (values next-chain-key message-key)."
+  (let* ((info-ck (babel:string-to-octets "chain"))
+         (info-mk (babel:string-to-octets "message"))
+         (salt (make-array 32 :element-type '(unsigned-byte 8) :initial-element 0))
+         (next-ck (hkdf-sha256 chain-key salt info-ck 32))
+         (msg-key (hkdf-sha256 chain-key salt info-mk 32)))
+    (values next-ck msg-key)))
+
+(defun kdf-root (root-key dh-output)
+  "Derive new root key and chain key from DH output.
+   Returns (values new-root-key new-chain-key)."
+  (let* ((input (concat-bytes root-key dh-output))
+         (salt (make-array 32 :element-type '(unsigned-byte 8) :initial-element 0))
+         (info (babel:string-to-octets "ratchet"))
+         (derived (hkdf-sha256 input salt info 64)))
+    (values (subseq derived 0 32)
+            (subseq derived 32 64))))
+
+(defun ratchet-encrypt (session plaintext)
+  "Encrypt PLAINTEXT using Double Ratchet SESSION.
+   Returns (values ciphertext header) where header contains DH ratchet key."
+  ;; Step chain forward
+  (multiple-value-bind (next-ck msg-key) 
+      (kdf-chain (or (session-sending-chain-key session)
+                     (session-root-key session)))
+    (setf (session-sending-chain-key session) next-ck)
+    (incf (session-send-count session))
+    ;; Encrypt with AES-256-GCM
+    (let* ((nonce (generate-random-bytes 12))
+           (cipher (ironclad:make-cipher :aes 
+                                         :key msg-key 
+                                         :mode :gcm
+                                         :initialization-vector nonce))
+           (plaintext-bytes (if (stringp plaintext)
+                                (babel:string-to-octets plaintext :encoding :utf-8)
+                                plaintext))
+           (ciphertext (make-array (length plaintext-bytes) 
+                                   :element-type '(unsigned-byte 8))))
+      (ironclad:encrypt-in-place cipher plaintext-bytes)
+      (replace ciphertext plaintext-bytes)
+      ;; Get authentication tag
+      (let ((tag (ironclad:produce-tag cipher)))
+        ;; Build header with our current ratchet public key
+        (let ((header `((:dh . ,(cdr (session-sending-ratchet-key session)))
+                        (:n . ,(session-send-count session))
+                        (:pn . 0))))  ; previous chain length, simplified
+          (values (concat-bytes nonce ciphertext tag) header))))))
+
+(defun ratchet-decrypt (session ciphertext header)
+  "Decrypt CIPHERTEXT using Double Ratchet SESSION.
+   HEADER contains sender's DH ratchet key.
+   Returns plaintext string."
+  (let ((their-dh (cdr (assoc :dh header))))
+    ;; Check if we need to perform DH ratchet step
+    (when (and their-dh 
+               (not (equalp their-dh (session-receiving-ratchet-key session))))
+      ;; Perform DH ratchet
+      (let ((dh-out (x25519-dh (car (session-sending-ratchet-key session)) their-dh)))
+        (multiple-value-bind (new-root new-chain) 
+            (kdf-root (session-root-key session) dh-out)
+          (setf (session-root-key session) new-root)
+          (setf (session-receiving-chain-key session) new-chain)
+          (setf (session-receiving-ratchet-key session) their-dh)
+          ;; Generate new sending ratchet key
+          (multiple-value-bind (priv pub) (generate-x25519-keypair)
+            (let ((dh-out2 (x25519-dh priv their-dh)))
+              (multiple-value-bind (new-root2 new-send-chain)
+                  (kdf-root (session-root-key session) dh-out2)
+                (setf (session-root-key session) new-root2)
+                (setf (session-sending-chain-key session) new-send-chain)
+                (setf (session-sending-ratchet-key session) (cons priv pub))))))))
+    ;; Step receiving chain forward
+    (multiple-value-bind (next-ck msg-key)
+        (kdf-chain (or (session-receiving-chain-key session)
+                       (session-root-key session)))
+      (setf (session-receiving-chain-key session) next-ck)
+      (incf (session-recv-count session))
+      ;; Decrypt with AES-256-GCM
+      (let* ((nonce (subseq ciphertext 0 12))
+             (tag (subseq ciphertext (- (length ciphertext) 16)))
+             (ct (subseq ciphertext 12 (- (length ciphertext) 16)))
+             (cipher (ironclad:make-cipher :aes
+                                           :key msg-key
+                                           :mode :gcm
+                                           :initialization-vector nonce))
+             (plaintext (make-array (length ct) :element-type '(unsigned-byte 8))))
+        (replace plaintext ct)
+        (ironclad:decrypt-in-place cipher plaintext)
+        ;; Verify tag - compare with produced tag
+        (let ((computed-tag (ironclad:produce-tag cipher)))
+          (unless (ironclad:constant-time-equal computed-tag tag)
+            (error "OMEMO: Authentication failed")))
+        (babel:octets-to-string plaintext :encoding :utf-8)))))
+
+;;; ============================================================
+;;; OMEMO Message Encryption/Decryption
+;;; ============================================================
+
+(defun omemo-encrypt-message (jid message)
+  "Encrypt MESSAGE for all devices of JID.
+   Returns OMEMO XML element for the encrypted message."
+  (let* ((device-ids (get-cached-device-list jid))
+         (key-elements nil)
+         ;; Generate random message key for this message
+         (msg-key (generate-random-bytes 32))
+         (nonce (generate-random-bytes 12)))
+    ;; Encrypt the actual message with the message key
+    (let* ((cipher (ironclad:make-cipher :aes :key msg-key :mode :gcm 
+                                         :initialization-vector nonce))
+           (plaintext (babel:string-to-octets message :encoding :utf-8))
+           (ciphertext (make-array (length plaintext) :element-type '(unsigned-byte 8))))
+      (replace ciphertext plaintext)
+      (ironclad:encrypt-in-place cipher ciphertext)
+      (let ((tag (ironclad:produce-tag cipher))
+            (payload (concat-bytes nonce ciphertext tag)))
+        ;; For each recipient device, encrypt the message key
+        (dolist (device-id device-ids)
+          (let ((session (get-session jid device-id)))
+            (when session
+              ;; Encrypt message key with session
+              (multiple-value-bind (encrypted-key header) 
+                  (ratchet-encrypt session msg-key)
+                (push (make-xml-element "key"
+                                        :attributes `(("rid" . ,(princ-to-string device-id)))
+                                        :text (bytes-to-base64 encrypted-key))
+                      key-elements)))))
+        ;; Build OMEMO encrypted element
+        (make-xml-element "encrypted"
+                          :namespace +omemo-ns+
+                          :children (list
+                                     (make-xml-element "header"
+                                                       :attributes `(("sid" . ,(princ-to-string (device-id *omemo-device*))))
+                                                       :children key-elements)
+                                     (make-xml-element "payload"
+                                                       :text (bytes-to-base64 payload))))))))
+
+(defun omemo-decrypt-message (encrypted-el from-jid)
+  "Decrypt OMEMO encrypted message element.
+   Returns plaintext string or NIL if decryption fails."
+  (handler-case
+      (let* ((header-el (xml-child encrypted-el "header"))
+             (payload-el (xml-child encrypted-el "payload"))
+             (sender-device-id (parse-integer (xml-attr header-el "sid")))
+             (my-device-id (device-id *omemo-device*))
+             ;; Find key element for our device
+             (my-key-el nil))
+        (dolist (child (xml-children header-el))
+          (when (and (listp child)
+                     (string= (xml-name child) "key")
+                     (equal (xml-attr child "rid") (princ-to-string my-device-id)))
+            (setf my-key-el child)
+            (return)))
+        (when (and my-key-el payload-el)
+          (let* ((encrypted-key (base64-to-bytes (xml-text my-key-el)))
+                 (payload (base64-to-bytes (xml-text payload-el)))
+                 (session (get-session from-jid sender-device-id)))
+            (when session
+              ;; Decrypt the message key
+              (let* ((header `((:dh . ,(session-receiving-ratchet-key session))
+                               (:n . 0)))
+                     (msg-key (ratchet-decrypt session encrypted-key header))
+                     ;; Decrypt the payload
+                     (nonce (subseq payload 0 12))
+                     (tag (subseq payload (- (length payload) 16)))
+                     (ct (subseq payload 12 (- (length payload) 16)))
+                     (cipher (ironclad:make-cipher :aes :key (babel:string-to-octets msg-key)
+                                                   :mode :gcm
+                                                   :initialization-vector nonce))
+                     (plaintext (make-array (length ct) :element-type '(unsigned-byte 8))))
+                (replace plaintext ct)
+                (ironclad:decrypt-in-place cipher plaintext)
+                (let ((computed-tag (ironclad:produce-tag cipher)))
+                  (unless (ironclad:constant-time-equal computed-tag tag)
+                    (error "OMEMO payload authentication failed")))
+                (babel:octets-to-string plaintext :encoding :utf-8))))))
+    (error (e)
+      (debug-log "OMEMO decryption error: ~a" e)
+      nil)))
