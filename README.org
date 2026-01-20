@@ -8,29 +8,39 @@ CLabber is a terminal UI (TUI) XMPP (Jabber) client written in Common Lisp.
 
 ** Features
 
+- *Native XMPP protocol implementation* - No external XMPP library dependencies
 - CLOS-first architecture for maintainability and extensibility
 - Event-driven design with thread-safe message passing
 - Widget-based UI with roster, buffer bar, and split chat panes
 - Scalable buffer bar (shows only open conversations)
-- MUC (Multi-User Chat) support with auto-join from config
+- *Server bookmarks* - Auto-join MUCs from XEP-0048/XEP-0402 bookmarks
+- MUC (Multi-User Chat) support with presence tracking
 - IRC bridge support via Biboumi
 - Theming system with colored nicks and customizable UI colors
 - Tokyo Night theme (default) with additional built-in themes
 
 ** Dependencies
 
-- =cl-ngxmpp-client= - XMPP protocol implementation
+*** Core
 - =croatoan= - ncurses TUI bindings
 - =bordeaux-threads= - Threading primitives
 - =alexandria= - Common utilities
 - =local-time= - Timestamp handling
 - =str= - String utilities
 
+*** XMPP Protocol (Native Implementation)
+- =usocket= - TCP socket handling
+- =cl+ssl= - TLS/STARTTLS support
+- =cxml= - XML parsing
+- =ironclad= - Cryptography for SASL
+- =cl-base64= - Base64 encoding
+- =babel= - Character encoding
+
 ** Installation
 
 #+begin_src bash
 # Clone the repository
-git clone https://github.com/yourusername/clabber.git
+git clone https://github.com/parenworks/clabber.git
 cd clabber
 
 # Load in SBCL
@@ -198,11 +208,40 @@ clabber/
 - [X] Presence colors in roster
 - [X] Tokyo Night default theme
 
-*** M6: Future
-- [ ] XEP-0048 bookmark parsing
+*** M6: Native XMPP & Bookmarks [Complete]
+- [X] Native XMPP protocol implementation (replacing cl-xmpp)
+- [X] STARTTLS connection support
+- [X] SASL PLAIN authentication
+- [X] XEP-0048/XEP-0402 bookmark parsing
+- [X] Auto-join MUCs from server bookmarks
+- [X] Roster parsing with namespace support
+
+*** M7: Enhanced Chat Experience
+- [ ] Message timestamps (XEP-0203 Delayed Delivery)
+- [ ] Message history (XEP-0313 MAM)
 - [ ] Room participant list
 - [ ] Private messages in MUC
-- [ ] Message history (MAM)
+- [ ] Typing notifications (XEP-0085)
+
+*** M8: Contact & Bookmark Management
+- [ ] Add/remove contacts (roster management)
+- [ ] Add/remove MUC bookmarks
+- [ ] Subscription handling (presence authorization)
+- [ ] vCard display (XEP-0054)
+
+*** M9: Security & Authentication
+- [ ] SCRAM-SHA-1 authentication
+- [ ] SASL EXTERNAL (client certificates)
+- [ ] OMEMO encryption (XEP-0384)
+- [ ] OTR encryption fallback
+
+*** M10: Advanced Features
+- [ ] File transfer (XEP-0363 HTTP Upload)
+- [ ] Message carbons (XEP-0280)
+- [ ] Stream management (XEP-0198)
+- [ ] Server-side message archiving
+- [ ] Multi-account support
+- [ ] Offline message queue
 
 ** License
 
