@@ -12,6 +12,9 @@
         ;; Apply theme from config or user theme file
         (apply-config-theme)
 
+        ;; Initialize OMEMO encryption
+        (init-omemo)
+
         ;; Get default account
         (let* ((account (default-account *config*))
                (jid (when account (account-config-jid account)))

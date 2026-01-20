@@ -30,6 +30,9 @@
        (:file "commands")
        (:file "dispatch")
        (:file "log")))
+     (:module "crypto"
+      :components
+      ((:file "omemo")))
      (:module "xmpp"
       :components
       ((:module "protocol"
