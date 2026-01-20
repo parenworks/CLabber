@@ -59,12 +59,14 @@
 ;;; ============================================================
 
 (defclass xmpp-engine ()
-  ((queue      :initform (make-event-queue) :reader engine-queue)
-   (thread     :initform nil :accessor engine-thread)
-   (running    :initform nil :accessor engine-running-p)
-   (connection :initform nil :accessor engine-connection)
-   (jid        :initform nil :accessor engine-jid)
-   (resource   :initform "CLabber" :accessor engine-resource))
+  ((queue       :initform (make-event-queue) :reader engine-queue)
+   (thread      :initform nil :accessor engine-thread)
+   (running     :initform nil :accessor engine-running-p)
+   (connection  :initform nil :accessor engine-connection)
+   (jid         :initform nil :accessor engine-jid)
+   (resource    :initform "CLabber" :accessor engine-resource)
+   (config-mucs :initform nil :accessor engine-config-mucs)
+   (bookmarks-received :initform nil :accessor engine-bookmarks-received-p))
   (:documentation "XMPP engine using native protocol implementation."))
 
 ;;; ============================================================
@@ -118,18 +120,9 @@
                        ;; Request bookmarks
                        (xmpp-get-bookmarks conn)
                        (debug-log "Requested bookmarks")
-                       ;; Auto-join MUC rooms from config
-                       (when muc-rooms
-                         (debug-log "Auto-joining ~d MUC rooms from config" (length muc-rooms))
-                         (dolist (room muc-rooms)
-                           (debug-log "Joining MUC: ~a" room)
-                           (xmpp-join-muc conn room usr))
-                         ;; Add all MUC rooms to roster
-                         (q-push (engine-queue eng)
-                                 (make-instance 'bookmarks-update
-                                                :rooms (mapcar (lambda (room)
-                                                                 (list :jid room :name room :autojoin t))
-                                                               muc-rooms))))
+                       ;; Config MUCs are now a fallback - only used if no server bookmarks
+                       ;; Store them for later use if bookmarks fail
+                       (setf (engine-config-mucs eng) muc-rooms)
                        ;; Enter receive loop
                        (engine-receive-loop eng)))
                  (error (e)
@@ -213,18 +206,37 @@
          (let ((type- (stanza-type stanza))
                (query (iq-query stanza)))
            (debug-log "IQ type=~a id=~a" type- (stanza-id stanza))
+           (when query
+             (debug-log "  Query: name=~a ns=~a" 
+                        (when (typep query 'xml-element) (xml-name query))
+                        (when (typep query 'xml-element) (xml-namespace query))))
            (when (and (string= type- "result") query)
              ;; Check for roster
              (when (and (typep query 'xml-element)
                         (string= (xml-name query) "query")
-                        (string= (xml-namespace query) +ns-roster+))
+                        (or (string= (xml-namespace query) +ns-roster+)
+                            (search "roster" (or (xml-namespace query) ""))))
                (engine-handle-roster engine query))
-             ;; Check for bookmarks
-             (let ((bookmarks (parse-bookmarks stanza)))
-               (when bookmarks
-                 (debug-log "Found ~d bookmarks" (length bookmarks))
-                 (q-push (engine-queue engine)
-                         (make-instance 'bookmarks-update :rooms bookmarks)))))))
+             ;; Check for bookmarks (only process first response to avoid duplicates)
+             (unless (engine-bookmarks-received-p engine)
+               (let ((bookmarks (parse-bookmarks stanza)))
+                 (when bookmarks
+                   (setf (engine-bookmarks-received-p engine) t)
+                   (debug-log "Found ~d bookmarks (first response)" (length bookmarks))
+                   ;; Log all bookmarks for debugging
+                   (dolist (bookmark bookmarks)
+                     (debug-log "  Bookmark: ~a autojoin=~a" 
+                                (getf bookmark :jid) (getf bookmark :autojoin)))
+                   ;; Auto-join rooms with autojoin=true
+                   (dolist (bookmark bookmarks)
+                     (let ((jid (getf bookmark :jid))
+                           (autojoin (getf bookmark :autojoin)))
+                       (when (and jid autojoin)
+                         (debug-log "Auto-joining bookmark: ~a" jid)
+                         (engine-join-muc engine jid))))
+                   ;; Push event to update UI (include all bookmarks, not just autojoin)
+                   (q-push (engine-queue engine)
+                           (make-instance 'bookmarks-update :rooms bookmarks))))))))
         
         ;; Raw XML element (stream errors, etc)
         (xml-element

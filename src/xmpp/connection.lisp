@@ -231,22 +231,35 @@
     (xmpp-send conn iq)))
 
 (defun parse-bookmarks (iq-stanza)
-  "Parse bookmarks from an IQ result stanza."
+  "Parse bookmarks from an IQ result stanza.
+   Handles both XEP-0048 (jid on conference) and XEP-0402 (jid on item id)."
   (let ((rooms nil)
         (query (iq-query iq-stanza)))
     (when query
-      (labels ((find-conferences (el)
+      (labels ((find-conferences (el &optional parent-item-id)
                  (when (typep el 'xml-element)
-                   (when (string= (xml-name el) "conference")
-                     (let ((jid (xml-attr el "jid"))
-                           (name (xml-attr el "name"))
-                           (autojoin (xml-attr el "autojoin")))
-                       (when jid
-                         (push (list :jid jid
-                                     :name name
-                                     :autojoin (string= autojoin "true"))
-                               rooms))))
-                   (dolist (child (xml-children el))
-                     (find-conferences child)))))
+                   (let ((el-name (xml-name el)))
+                     ;; XEP-0402: item element has id=JID
+                     (when (string= el-name "item")
+                       (let ((item-id (xml-attr el "id")))
+                         (dolist (child (xml-children el))
+                           (find-conferences child item-id))
+                         (return-from find-conferences)))
+                     ;; Conference element
+                     (when (string= el-name "conference")
+                       ;; XEP-0048: jid is attribute on conference
+                       ;; XEP-0402: jid comes from parent item id
+                       (let ((jid (or (xml-attr el "jid") parent-item-id))
+                             (name (xml-attr el "name"))
+                             (autojoin (xml-attr el "autojoin")))
+                         (when jid
+                           (push (list :jid jid
+                                       :name (or name jid)
+                                       :autojoin (or (string= autojoin "true")
+                                                     (string= autojoin "1")))
+                                 rooms))))
+                     ;; Recurse into children
+                     (dolist (child (xml-children el))
+                       (find-conferences child parent-item-id))))))
         (find-conferences query)))
     (nreverse rooms)))

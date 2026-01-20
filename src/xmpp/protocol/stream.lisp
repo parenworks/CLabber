@@ -291,6 +291,8 @@
                        (t tag-content)))
                (attrs (when space-pos
                         (parse-attributes (subseq tag-content space-pos))))
+               ;; Extract xmlns from attributes
+               (xmlns (cdr (assoc "xmlns" attrs :test #'string=)))
                ;; Extract text content between tags (simple case)
                (end-tag-start (search (format nil "</~a>" name) xml-string))
                (text (when (and end-tag-start (> end-tag-start (1+ first-gt)))
@@ -298,6 +300,7 @@
                ;; Find child elements
                (children (parse-child-elements xml-string (1+ first-gt) end-tag-start)))
           (make-xml-element name 
+                            :namespace xmlns
                             :attributes attrs 
                             :text (when (and text (not children)) text)
                             :children children))))))
