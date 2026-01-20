@@ -18,12 +18,20 @@
    (timestamp :initarg :timestamp :initform nil :reader evt-timestamp
               :documentation "XEP-0203 delay timestamp or current time")
    (msg-id :initarg :msg-id :initform nil :reader evt-msg-id
-           :documentation "Message ID for deduplication")))
+           :documentation "Message ID for deduplication")
+   (msg-type :initarg :msg-type :initform nil :reader evt-msg-type
+             :documentation "Message type: chat, groupchat, etc.")))
 
 (defclass xmpp-presence (event)
   ((jid :initarg :jid :reader evt-jid)
    (show :initarg :show :reader evt-show)
    (status :initarg :status :initform nil :reader evt-status)))
+
+(defclass chat-state-event (event)
+  ((from :initarg :from :reader evt-from)
+   (state :initarg :state :reader evt-state
+          :documentation "Chat state: active, composing, paused, inactive, gone"))
+  (:documentation "XEP-0085 chat state notification."))
 
 (defclass muc-presence (event)
   ((room :initarg :room :reader evt-room
@@ -97,18 +105,34 @@
 
 (defmethod apply-event ((e xmpp-message) (st app-state) (ly layout))
   (let* ((full-from (evt-from e))
+         (msg-type (evt-msg-type e))
          ;; For MUC messages, use bare JID as buffer key, resource as sender name
          (bare-from (bare-jid full-from))
          (sender (or (jid-resource full-from) bare-from))
          ;; Check if this is a MUC room
          (roster-item (find bare-from (state-roster st) :key #'roster-jid :test #'string=))
          (is-muc (and roster-item (string= (roster-presence roster-item) "muc")))
+         ;; MUC private message: from room/nick but type="chat" (not "groupchat")
+         (is-muc-private (and is-muc 
+                              (jid-resource full-from)
+                              (or (null msg-type) 
+                                  (string= msg-type "chat"))))
          ;; Skip own MUC messages (server echo) - we already show "me:" locally
          (my-nick (state-my-nick st))
-         (is-own-muc-echo (and is-muc my-nick (string= sender my-nick)))
+         (is-own-muc-echo (and is-muc 
+                               (not is-muc-private)
+                               my-nick 
+                               (string= sender my-nick)))
          ;; Get message ID for deduplication
          (msg-id (evt-msg-id e))
-         (from (if is-muc bare-from full-from))
+         ;; Determine buffer key:
+         ;; - MUC private: use full JID (room/nick) as buffer
+         ;; - MUC groupchat: use bare JID (room) as buffer
+         ;; - Regular DM: use full-from
+         (from (cond
+                 (is-muc-private full-from)  ; Private chat with room/nick
+                 (is-muc bare-from)          ; Room groupchat
+                 (t full-from)))             ; Regular DM
          (buf (state-ensure-buffer st from :title from))
          ;; Check if we've already seen this message
          (already-seen (and msg-id 
@@ -118,7 +142,10 @@
       ;; Mark message as seen
       (when msg-id
         (setf (gethash msg-id (buffer-seen-ids buf)) t))
-      (let* ((display-name (if is-muc sender full-from))
+      (let* ((display-name (cond
+                             (is-muc-private sender)  ; Show nick for private
+                             (is-muc sender)          ; Show nick for groupchat
+                             (t full-from)))          ; Show full JID for DM
              (timestamp (format-timestamp (evt-timestamp e))))
         (buffer-add-line buf (format nil "~@[~a ~]~a: ~a" timestamp display-name (evt-body e)))
         (cond
@@ -156,6 +183,21 @@
       (if (string= show "offline")
           (remhash nick participants)
           (setf (gethash nick participants) show))))
+  st)
+
+(defmethod apply-event ((e chat-state-event) (st app-state) (ly layout))
+  (declare (ignore ly))
+  (let* ((from (evt-from e))
+         (state (evt-state e))
+         (bare-from (bare-jid from))
+         (buf (find-buffer st bare-from)))
+    (when buf
+      (let ((typing (buffer-typing-users buf)))
+        (if (string= state "composing")
+            ;; User is typing - add to typing list with timestamp
+            (setf (gethash from typing) (get-universal-time))
+            ;; User stopped typing - remove from list
+            (remhash from typing)))))
   st)
 
 (defmethod apply-event ((e roster-update) (st app-state) (ly layout))

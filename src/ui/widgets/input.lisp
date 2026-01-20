@@ -54,6 +54,10 @@
 
       ;; Regular printable character
       ((and ch (characterp ch) (graphic-char-p ch))
-       (setf (ui-input-text ui)
-             (concatenate 'string (ui-input-text ui) (string ch))))))
+       (let ((was-empty (zerop (length (ui-input-text ui)))))
+         (setf (ui-input-text ui)
+               (concatenate 'string (ui-input-text ui) (string ch)))
+         ;; Mark that we should send composing state
+         (when was-empty
+           (setf (ui-composing-p ui) t))))))
   nil)

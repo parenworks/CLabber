@@ -185,6 +185,22 @@
     (xmpp-send conn iq)))
 
 ;;; ============================================================
+;;; Chat State Notifications (XEP-0085)
+;;; ============================================================
+
+(defparameter +ns-chatstates+ "http://jabber.org/protocol/chatstates"
+  "Chat state notifications namespace.")
+
+(defun xmpp-send-chat-state (conn to state &key (type "chat"))
+  "Send a chat state notification. STATE is one of: active, composing, paused, inactive, gone."
+  (let* ((state-el (make-xml-element state :namespace +ns-chatstates+))
+         (msg (make-xml-element "message"
+                                :attributes `(("to" . ,to)
+                                              ("type" . ,type))
+                                :children (list state-el))))
+    (xmpp-stream-send (conn-stream conn) msg)))
+
+;;; ============================================================
 ;;; MUC (XEP-0045)
 ;;; ============================================================
 

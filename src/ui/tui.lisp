@@ -16,12 +16,19 @@
   "Process Enter key in chat pane - send message."
   (let* ((text (ui-input-text ui))
          (pane (focused-chat-pane ly))
-         (buf-id (pane-buffer-id ly pane)))
+         (buf-id (pane-buffer-id ly pane))
+         (roster-item (when buf-id
+                        (find buf-id (state-roster st) 
+                              :key #'roster-jid :test #'equal)))
+         (is-muc (and roster-item (string= (roster-presence roster-item) "muc"))))
     (if (and (> (length text) 0)
              (not (eql buf-id :system)))
         (progn
           (let ((cmd (make-instance 'send-message :to buf-id :body text)))
             (execute cmd st ly engine))
+          ;; Send active state after message (XEP-0085)
+          (engine-send-chat-state engine buf-id "active" 
+                                  :type (if is-muc "groupchat" "chat"))
           (input-add-to-history ui text)
           (input-clear ui))
         ;; Debug: log why we didn't send
@@ -82,7 +89,19 @@
 
             ;; Input widget collects typed chars only when focus is on chat pane
             (when (member (layout-focused-pane ly) '(:chat-a :chat-b))
-              (handle-input (cdr (assoc :input widgets)) key st ly ui))))
+              (handle-input (cdr (assoc :input widgets)) key st ly ui)
+              ;; Send composing state if user started typing
+              (when (ui-composing-p ui)
+                (setf (ui-composing-p ui) nil)
+                (let* ((pane (focused-chat-pane ly))
+                       (buf-id (pane-buffer-id ly pane))
+                       (roster-item (when buf-id
+                                      (find buf-id (state-roster st) 
+                                            :key #'roster-jid :test #'equal)))
+                       (is-muc (and roster-item (string= (roster-presence roster-item) "muc"))))
+                  (when buf-id
+                    (engine-send-chat-state engine buf-id "composing" 
+                                            :type (if is-muc "groupchat" "chat"))))))))
 
         ;; 3) Render - check if current buffer is MUC to show participants
         (let* ((pane (focused-chat-pane ly))

@@ -6,7 +6,9 @@
   ((input-text :initform "" :accessor ui-input-text)
    (input-cursor :initform 0 :accessor ui-input-cursor)
    (input-history :initform '() :accessor ui-input-history)
-   (history-index :initform -1 :accessor ui-history-index)))
+   (history-index :initform -1 :accessor ui-history-index)
+   (composing-p :initform nil :accessor ui-composing-p
+                :documentation "T when user started typing and composing state should be sent")))
 
 (defclass widget () ())
 

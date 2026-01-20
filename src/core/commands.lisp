@@ -31,6 +31,14 @@
 
 (defclass swap-panes (command) ())
 
+(defclass participant-move (command)
+  ((dir :initarg :dir :reader cmd-dir))
+  (:documentation "Move selection in participant list. DIR is :up or :down."))
+
+(defclass participant-open-private (command)
+  ()
+  (:documentation "Open private chat with selected participant."))
+
 (defgeneric execute (cmd st ly engine)
   (:documentation "Execute command, returning updated state and layout."))
 
@@ -166,6 +174,49 @@
           (b (layout-chat-b-buffer ly)))
       (setf (layout-chat-a-buffer ly) b
             (layout-chat-b-buffer ly) a)))
+  (values st ly))
+
+(defun get-sorted-participants (st ly)
+  "Get sorted list of participant nicks for current MUC buffer."
+  (let* ((pane (focused-chat-pane ly))
+         (buf-id (pane-buffer-id ly pane))
+         (buf (when buf-id (find-buffer st buf-id))))
+    (when buf
+      (let ((nicks nil))
+        (maphash (lambda (nick show)
+                   (declare (ignore show))
+                   (push nick nicks))
+                 (buffer-participants buf))
+        (sort nicks #'string-lessp)))))
+
+(defmethod execute ((c participant-move) (st app-state) (ly layout) engine)
+  (declare (ignore engine))
+  (let* ((participants (get-sorted-participants st ly))
+         (count (length participants)))
+    (when (> count 0)
+      (let ((idx (layout-participant-index ly)))
+        (setf (layout-participant-index ly)
+              (clamp (if (eql (cmd-dir c) :up)
+                         (1- idx)
+                         (1+ idx))
+                     0 (1- count))))))
+  (values st ly))
+
+(defmethod execute ((c participant-open-private) (st app-state) (ly layout) engine)
+  (declare (ignore engine))
+  (let* ((participants (get-sorted-participants st ly))
+         (idx (layout-participant-index ly))
+         (pane (focused-chat-pane ly))
+         (buf-id (pane-buffer-id ly pane)))
+    (when (and participants buf-id (< idx (length participants)))
+      (let* ((nick (nth idx participants))
+             ;; Build full JID: room@server/nick
+             (private-jid (format nil "~a/~a" buf-id nick)))
+        ;; Open buffer for private chat
+        (ensure-buffer st private-jid :title private-jid)
+        (open-buffer! st private-jid)
+        (setf (pane-buffer-id ly pane) private-jid)
+        (touch-open-buffer! st private-jid))))
   (values st ly))
 
 (defmethod execute ((c command) (st app-state) (ly layout) engine)

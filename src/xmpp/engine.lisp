@@ -188,15 +188,26 @@
          (let ((from (stanza-from stanza))
                (body (message-body stanza))
                (delay (message-delay stanza))
-               (msg-id (stanza-id stanza)))
+               (msg-id (stanza-id stanza))
+               (msg-type (stanza-type stanza))
+               (chat-state (message-chat-state stanza)))
+           ;; Handle chat state notifications (XEP-0085)
+           (when (and from chat-state)
+             (debug-log "Chat state from ~a: ~a" from chat-state)
+             (q-push (engine-queue engine)
+                     (make-instance 'chat-state-event
+                                    :from from
+                                    :state chat-state)))
+           ;; Handle message body
            (when (and from body (> (length body) 0))
-             (debug-log "Message from ~a: ~a" from (subseq body 0 (min 50 (length body))))
+             (debug-log "Message from ~a type=~a: ~a" from msg-type (subseq body 0 (min 50 (length body))))
              (q-push (engine-queue engine)
                      (make-instance 'xmpp-message 
                                     :from from 
                                     :body body
                                     :timestamp (or delay (current-timestamp))
-                                    :msg-id msg-id)))))
+                                    :msg-id msg-id
+                                    :msg-type msg-type)))))
         
         ;; Presence stanza
         (presence-stanza
@@ -325,4 +336,12 @@
   (when (engine-connection engine)
     (handler-case
         (xmpp-send-presence (engine-connection engine) :show show :status status)
+      (error () nil))))
+
+(defun engine-send-chat-state (engine to state &key (type "chat"))
+  "Send a chat state notification (XEP-0085).
+   STATE is one of: active, composing, paused, inactive, gone."
+  (when (engine-connection engine)
+    (handler-case
+        (xmpp-send-chat-state (engine-connection engine) to state :type type)
       (error () nil))))

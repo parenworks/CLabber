@@ -223,11 +223,11 @@ clabber/
 *** M7: Enhanced Chat Experience [Complete]
 - [X] Message timestamps (XEP-0203 Delayed Delivery)
 - [X] Message history (XEP-0313 MAM) - Last 50 messages on room join
-- [X] Room participant list with presence colors
+- [X] Room participant list with presence colors and selection (Alt+J/K/O)
 - [X] HTML entity decoding in messages
 - [X] authinfo.gpg password support
-- [ ] Private messages in MUC
-- [ ] Typing notifications (XEP-0085)
+- [X] Private messages in MUC (XEP-0045) - needs testing
+- [X] Typing notifications (XEP-0085) - needs testing
 
 *** M8: Contact & Bookmark Management
 - [ ] Add/remove contacts (roster management)

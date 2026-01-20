@@ -14,7 +14,9 @@
    (participants :initform (make-hash-table :test 'equal) :accessor buffer-participants
                  :documentation "Hash table of nick -> presence for MUC rooms")
    (seen-ids :initform (make-hash-table :test 'equal) :accessor buffer-seen-ids
-             :documentation "Hash table of message IDs to prevent duplicates"))
+             :documentation "Hash table of message IDs to prevent duplicates")
+   (typing-users :initform (make-hash-table :test 'equal) :accessor buffer-typing-users
+                 :documentation "Hash table of JID -> timestamp for users currently typing"))
   (:documentation "A chat buffer containing message lines."))
 
 (defclass roster-item ()
@@ -45,7 +47,9 @@
    (last-chat-focus   :initform :chat-a :accessor layout-last-chat-focus)
    (chat-a-buffer     :initform :system :accessor layout-chat-a-buffer)
    (chat-b-buffer     :initform nil :accessor layout-chat-b-buffer)
-   (roster-index      :initform 0 :accessor layout-roster-index))
+   (roster-index      :initform 0 :accessor layout-roster-index)
+   (participant-index :initform 0 :accessor layout-participant-index
+                      :documentation "Selected participant index in MUC participant list"))
   (:documentation "UI layout state including split configuration and focus."))
 
 ;;; ============================================================

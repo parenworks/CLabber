@@ -21,7 +21,9 @@
          (roster-item (when buf-id
                         (find buf-id (state-roster st) 
                               :key #'roster-jid :test #'equal)))
-         (is-muc (and roster-item (string= (roster-presence roster-item) "muc"))))
+         (is-muc (and roster-item (string= (roster-presence roster-item) "muc")))
+         ;; Selected participant index
+         (selected-idx (layout-participant-index ly)))
     ;; Draw border
     (de.anvi.croatoan:move scr y x)
     (de.anvi.croatoan:add-string scr (make-string width :initial-element #\-))
@@ -35,7 +37,8 @@
     (when (and is-muc buf)
       (let ((participants (buffer-participants buf))
             (row 1)
-            (max-rows (1- height)))
+            (max-rows (1- height))
+            (idx 0))
         ;; Sort participants alphabetically
         (let ((nicks nil))
           (maphash (lambda (nick show)
@@ -51,11 +54,19 @@
             (when (< row max-rows)
               (let* ((show (gethash nick participants))
                      (color (theme-presence-color theme show))
-                     (display-nick (if (> (length nick) (- width 2))
-                                       (subseq nick 0 (- width 2))
+                     (is-selected (= idx selected-idx))
+                     (marker (if is-selected ">" " "))
+                     (display-nick (if (> (length nick) (- width 3))
+                                       (subseq nick 0 (- width 3))
                                        nick)))
                 (de.anvi.croatoan:move scr (+ y row) x)
-                (de.anvi.croatoan:add-string scr " ")
-                (de.anvi.croatoan:add-string scr display-nick 
-                                             :color-pair (list color nil)))
-              (incf row))))))))
+                (de.anvi.croatoan:add-string scr marker)
+                (if is-selected
+                    ;; Highlight selected participant
+                    (de.anvi.croatoan:add-string scr display-nick 
+                                                 :color-pair (list :black color))
+                    ;; Normal display
+                    (de.anvi.croatoan:add-string scr display-nick 
+                                                 :color-pair (list color nil))))
+              (incf row)
+              (incf idx))))))))

@@ -33,6 +33,11 @@
 (defparameter +key-alt-8+ '(27 #\8))
 (defparameter +key-alt-9+ '(27 #\9))
 
+;; Alt+letter keys for participant navigation
+(defparameter +key-alt-j+ '(27 #\j))  ; Participant down
+(defparameter +key-alt-k+ '(27 #\k))  ; Participant up
+(defparameter +key-alt-o+ '(27 #\o))  ; Open private chat with participant
+
 ;;; ============================================================
 ;;; Key Binding Classes
 ;;; ============================================================
@@ -64,6 +69,11 @@
 (defclass navigation-key-binding (key-binding)
   ((direction :initarg :direction :reader binding-direction))
   (:documentation "Navigation binding that varies by focused pane."))
+
+(defclass alt-key-binding (key-binding)
+  ((command-class :initarg :command-class :reader binding-command-class)
+   (command-args :initarg :command-args :initform nil :reader binding-command-args))
+  (:documentation "Alt+key binding (ESC followed by character)."))
 
 ;;; ============================================================
 ;;; Generic Functions for Key Binding Protocol
@@ -139,6 +149,16 @@
     (list (make-instance 'roster-move :dir dir)
           (make-instance 'roster-open-selection))))
 
+(defmethod binding-matches-p ((b alt-key-binding) key context)
+  (declare (ignore context))
+  (equal (binding-key b) key))
+
+(defmethod binding-commands ((b alt-key-binding) context)
+  (declare (ignore context))
+  (list (apply #'make-instance 
+               (binding-command-class b)
+               (binding-command-args b))))
+
 ;;; ============================================================
 ;;; Global Keymap
 ;;; ============================================================
@@ -195,7 +215,22 @@
          (make-instance 'navigation-key-binding
                         :key +key-ctrl-p+
                         :direction -1
-                        :description "Previous roster item"))))
+                        :description "Previous roster item")
+         ;; Participant navigation - Alt+J/K/O
+         (make-instance 'alt-key-binding
+                        :key +key-alt-j+
+                        :command-class 'participant-move
+                        :command-args '(:dir :down)
+                        :description "Next participant")
+         (make-instance 'alt-key-binding
+                        :key +key-alt-k+
+                        :command-class 'participant-move
+                        :command-args '(:dir :up)
+                        :description "Previous participant")
+         (make-instance 'alt-key-binding
+                        :key +key-alt-o+
+                        :command-class 'participant-open-private
+                        :description "Open private chat with participant"))))
 
 ;; Initialize on load
 (init-global-keymap)

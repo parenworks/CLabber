@@ -25,7 +25,9 @@
    (subject :initarg :subject :accessor message-subject :initform nil)
    (thread  :initarg :thread  :accessor message-thread  :initform nil)
    (delay   :initarg :delay   :accessor message-delay   :initform nil
-            :documentation "XEP-0203 delay timestamp (ISO 8601 string)"))
+            :documentation "XEP-0203 delay timestamp (ISO 8601 string)")
+   (chat-state :initarg :chat-state :accessor message-chat-state :initform nil
+               :documentation "XEP-0085 chat state: active, composing, paused, inactive, gone"))
   (:documentation "XMPP message stanza."))
 
 (defmethod print-object ((m message-stanza) stream)
@@ -116,7 +118,13 @@
         (let ((body-el (xml-child el "body"))
               (subject-el (xml-child el "subject"))
               (thread-el (xml-child el "thread"))
-              (delay-el (xml-child el "delay")))
+              (delay-el (xml-child el "delay"))
+              ;; XEP-0085 chat state - look for state elements
+              (chat-state (or (when (xml-child el "composing") "composing")
+                              (when (xml-child el "active") "active")
+                              (when (xml-child el "paused") "paused")
+                              (when (xml-child el "inactive") "inactive")
+                              (when (xml-child el "gone") "gone"))))
           (make-instance 'message-stanza
                          :id (xml-attr el "id")
                          :to (xml-attr el "to")
@@ -126,6 +134,7 @@
                          :subject (when subject-el (decode-xml-entities (xml-text subject-el)))
                          :thread (when thread-el (xml-text thread-el))
                          :delay (when delay-el (xml-attr delay-el "stamp"))
+                         :chat-state chat-state
                          :xml el)))))
 
 (defun parse-presence-stanza (el)
