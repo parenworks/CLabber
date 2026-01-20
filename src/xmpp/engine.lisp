@@ -1,4 +1,6 @@
-;;;; engine.lisp - XMPP engine for CLabber using cl-xmpp
+;;;; engine-new.lisp - XMPP engine using native implementation
+;;;;
+;;;; This replaces the cl-xmpp based engine with our own XMPP protocol code.
 
 (in-package #:clabber)
 
@@ -25,14 +27,9 @@
     (close *debug-log-stream*)
     (setf *debug-log-stream* nil)))
 
-(defclass xmpp-engine ()
-  ((queue      :initform (make-event-queue) :reader engine-queue)
-   (thread     :initform nil :accessor engine-thread)
-   (running    :initform nil :accessor engine-running-p)
-   (connection :initform nil :accessor engine-connection)
-   (jid        :initform nil :accessor engine-jid)
-   (resource   :initform "CLabber" :accessor engine-resource))
-  (:documentation "XMPP engine using cl-xmpp library."))
+;;; ============================================================
+;;; JID Parsing
+;;; ============================================================
 
 (defun parse-jid (jid)
   "Parse JID into (values user domain resource)."
@@ -43,6 +40,36 @@
                 (subseq jid (1+ at-pos) (or slash-pos (length jid)))
                 nil)
             (if slash-pos (subseq jid (1+ slash-pos)) nil))))
+
+(defun bare-jid (full-jid)
+  "Extract bare JID (user@domain) from full JID."
+  (let ((slash-pos (position #\/ full-jid)))
+    (if slash-pos
+        (subseq full-jid 0 slash-pos)
+        full-jid)))
+
+(defun jid-resource (full-jid)
+  "Extract resource from full JID."
+  (let ((slash-pos (position #\/ full-jid)))
+    (when slash-pos
+      (subseq full-jid (1+ slash-pos)))))
+
+;;; ============================================================
+;;; XMPP Engine Class
+;;; ============================================================
+
+(defclass xmpp-engine ()
+  ((queue      :initform (make-event-queue) :reader engine-queue)
+   (thread     :initform nil :accessor engine-thread)
+   (running    :initform nil :accessor engine-running-p)
+   (connection :initform nil :accessor engine-connection)
+   (jid        :initform nil :accessor engine-jid)
+   (resource   :initform "CLabber" :accessor engine-resource))
+  (:documentation "XMPP engine using native protocol implementation."))
+
+;;; ============================================================
+;;; Engine Lifecycle
+;;; ============================================================
 
 (defun engine-start (engine jid password &key host port mucs)
   "Start the XMPP engine and connect."
@@ -62,49 +89,57 @@
       (setf (engine-thread engine)
             (bt:make-thread
              (lambda ()
-               ;; Enable debug logging to file
                (open-debug-log)
-               (setf xmpp:*debug-stream* *debug-log-stream*)
-               (debug-log "=== CLabber XMPP Engine Starting ===")
+               (debug-log "=== CLabber XMPP Engine Starting (Native) ===")
+               (debug-log "JID: ~a, Host: ~a, Port: ~d" jid (or hst dom) prt)
                (handler-case
-                   (let* ((hostname (or hst dom))
-                          (conn (xmpp:connect-tls :hostname hostname
-                                                  :port prt
-                                                  :jid-domain-part dom)))
-                     (setf (engine-connection eng) conn)
+                   (progn
+                     ;; Notify connecting
                      (q-push (engine-queue eng)
                              (make-instance 'xmpp-connecting :jid jid))
-                       ;; Authenticate using SASL PLAIN
-                       (xmpp:auth conn usr pwd res :mechanism :sasl-plain)
-                       ;; If we get here, auth succeeded
+                     ;; Connect and authenticate
+                     (let ((conn (xmpp-connect jid pwd
+                                               :host hst
+                                               :port prt
+                                               :resource res
+                                               :mechanism :plain)))
+                       (setf (engine-connection eng) conn)
+                       (debug-log "Connected and authenticated as ~a" (conn-bound-jid conn))
+                       ;; Notify connected
                        (q-push (engine-queue eng)
-                               (make-instance 'xmpp-connected :jid jid))
+                               (make-instance 'xmpp-connected 
+                                              :jid (or (conn-bound-jid conn) jid)))
+                       ;; Send initial presence
+                       (xmpp-send-presence conn)
+                       (debug-log "Sent initial presence")
                        ;; Request roster
-                       (xmpp:get-roster conn)
-                       ;; Request bookmarks (XEP-0048) for MUC rooms
-                       (debug-log "Requesting bookmarks...")
-                       (engine-request-bookmarks conn)
+                       (xmpp-get-roster conn)
+                       (debug-log "Requested roster")
+                       ;; Request bookmarks
+                       (xmpp-get-bookmarks conn)
+                       (debug-log "Requested bookmarks")
                        ;; Auto-join MUC rooms from config
                        (when muc-rooms
                          (debug-log "Auto-joining ~d MUC rooms from config" (length muc-rooms))
                          (dolist (room muc-rooms)
                            (debug-log "Joining MUC: ~a" room)
-                           (engine-join-muc-raw conn room usr))
-                         ;; Add all MUC rooms to roster at once
+                           (xmpp-join-muc conn room usr))
+                         ;; Add all MUC rooms to roster
                          (q-push (engine-queue eng)
                                  (make-instance 'bookmarks-update
                                                 :rooms (mapcar (lambda (room)
                                                                  (list :jid room :name room :autojoin t))
                                                                muc-rooms))))
                        ;; Enter receive loop
-                       (engine-receive-loop eng))
-                   (error (e)
-                     (q-push (engine-queue eng)
-                             (make-instance 'error-event
-                                            :where :xmpp
-                                            :condition (format nil "~a" e)))
-                     (q-push (engine-queue eng)
-                             (make-instance 'xmpp-disconnected)))))
+                       (engine-receive-loop eng)))
+                 (error (e)
+                   (debug-log "Connection error: ~a" e)
+                   (q-push (engine-queue eng)
+                           (make-instance 'error-event
+                                          :where :xmpp
+                                          :condition (format nil "~a" e)))
+                   (q-push (engine-queue eng)
+                           (make-instance 'xmpp-disconnected)))))
              :name "clabber-xmpp-thread"))))
   engine)
 
@@ -115,37 +150,56 @@
     (debug-log "Entering receive loop...")
     (loop while (and (engine-running-p engine)
                      conn
-                     (xmpp:connectedp conn))
+                     (conn-connected-p conn))
           do (handler-case
-                 (let ((stanza (xmpp:receive-stanza conn)))
+                 (let ((stanza (xmpp-receive conn)))
                    (when stanza
                      (incf stanza-count)
                      (debug-log "Stanza #~d: ~a" stanza-count (type-of stanza))
                      (engine-handle-stanza engine stanza)))
                (error (e)
-                 (debug-log "Receive error: ~a" e)))))
+                 (debug-log "Receive error: ~a" e)
+                 ;; Don't break loop on transient errors
+                 (sleep 0.1)))))
   ;; Connection ended
+  (debug-log "Receive loop ended")
   (q-push (engine-queue engine)
           (make-instance 'xmpp-disconnected)))
+
+(defun engine-stop (engine)
+  "Stop the XMPP engine."
+  (setf (engine-running-p engine) nil)
+  (when (engine-connection engine)
+    (handler-case
+        (xmpp-disconnect (engine-connection engine))
+      (error () nil)))
+  (close-debug-log)
+  engine)
+
+;;; ============================================================
+;;; Stanza Handling
+;;; ============================================================
 
 (defun engine-handle-stanza (engine stanza)
   "Handle a received XMPP stanza and convert to events."
   (handler-case
       (typecase stanza
         ;; Message stanza
-        (xmpp:message
-         (let ((from (xmpp:from stanza))
-               (body (xmpp:body stanza)))
+        (message-stanza
+         (let ((from (stanza-from stanza))
+               (body (message-body stanza)))
            (when (and from body (> (length body) 0))
+             (debug-log "Message from ~a: ~a" from (subseq body 0 (min 50 (length body))))
              (q-push (engine-queue engine)
                      (make-instance 'xmpp-message :from from :body body)))))
         
         ;; Presence stanza
-        (xmpp:presence
-         (let ((from (xmpp:from stanza)))
+        (presence-stanza
+         (let ((from (stanza-from stanza)))
            (when from
-             (let ((type- (ignore-errors (slot-value stanza 'xmpp::type-)))
-                   (show (ignore-errors (slot-value stanza 'xmpp::show))))
+             (let ((type- (stanza-type stanza))
+                   (show (presence-show stanza)))
+               (debug-log "Presence from ~a: type=~a show=~a" from type- show)
                (q-push (engine-queue engine)
                        (make-instance 'xmpp-presence
                                       :jid from
@@ -154,53 +208,57 @@
                                                     "offline"
                                                     "available"))))))))
         
-        ;; Roster response
-        (xmpp:roster
-         (let ((items (mapcar (lambda (item)
-                                (make-instance 'roster-item
-                                               :jid (xmpp:jid item)
-                                               :name (ignore-errors (slot-value item 'xmpp::name))))
-                              (xmpp:items stanza))))
-           (q-push (engine-queue engine)
-                   (make-instance 'roster-update :items items))))
-        
-        ;; xml-element: IQ responses come back as this type
-        (xmpp::xml-element
-         (let* ((name (ignore-errors (xmpp::name stanza)))
-                (xml-str (ignore-errors
-                           (with-output-to-string (s)
-                             (format s "IQ name=~a, elements=~a" 
-                                     name
-                                     (length (ignore-errors (xmpp::elements stanza))))))))
-           (q-push (engine-queue engine)
-                   (make-instance 'error-event
-                                  :where :iq
-                                  :condition (or xml-str "xml-element received")))
-           ;; Check for bookmarks in IQ result
-           (when (eq name :iq)
-             (let ((bookmarks (engine-extract-bookmarks-from-xml stanza)))
+        ;; IQ stanza
+        (iq-stanza
+         (let ((type- (stanza-type stanza))
+               (query (iq-query stanza)))
+           (debug-log "IQ type=~a id=~a" type- (stanza-id stanza))
+           (when (and (string= type- "result") query)
+             ;; Check for roster
+             (when (and (typep query 'xml-element)
+                        (string= (xml-name query) "query")
+                        (string= (xml-namespace query) +ns-roster+))
+               (engine-handle-roster engine query))
+             ;; Check for bookmarks
+             (let ((bookmarks (parse-bookmarks stanza)))
                (when bookmarks
+                 (debug-log "Found ~d bookmarks" (length bookmarks))
                  (q-push (engine-queue engine)
                          (make-instance 'bookmarks-update :rooms bookmarks)))))))
         
+        ;; Raw XML element (stream errors, etc)
+        (xml-element
+         (debug-log "XML element: ~a" (xml-name stanza)))
+        
         ;; Catch-all
         (t nil))
-    (error () nil)))
+    (error (e)
+      (debug-log "Error handling stanza: ~a" e))))
 
-(defun engine-stop (engine)
-  "Stop the XMPP engine."
-  (setf (engine-running-p engine) nil)
-  (when (engine-connection engine)
-    (handler-case
-        (xmpp:disconnect (engine-connection engine))
-      (error () nil)))
-  engine)
+(defun engine-handle-roster (engine query)
+  "Handle a roster query result."
+  (let ((items nil))
+    (dolist (child (xml-children query))
+      (when (and (typep child 'xml-element)
+                 (string= (xml-name child) "item"))
+        (let ((jid (xml-attr child "jid"))
+              (name (xml-attr child "name")))
+          (when jid
+            (push (make-instance 'roster-item :jid jid :name name) items)))))
+    (when items
+      (debug-log "Roster: ~d items" (length items))
+      (q-push (engine-queue engine)
+              (make-instance 'roster-update :items (nreverse items))))))
+
+;;; ============================================================
+;;; Sending
+;;; ============================================================
 
 (defun engine-send-message (engine to body)
   "Send a message via the XMPP engine."
   (when (engine-connection engine)
     (handler-case
-        (xmpp:message (engine-connection engine) to body)
+        (xmpp-send-message (engine-connection engine) to body)
       (error (e)
         (q-push (engine-queue engine)
                 (make-instance 'error-event
@@ -212,105 +270,20 @@
   "Send a groupchat message to a MUC."
   (when (engine-connection engine)
     (handler-case
-        (xmpp:message (engine-connection engine) room-jid body :type :groupchat)
+        (xmpp-send-groupchat (engine-connection engine) room-jid body)
       (error () nil))))
 
 (defun engine-join-muc (engine room-jid &optional nickname)
-  "Join a MUC room by sending presence to room-jid/nickname."
+  "Join a MUC room."
   (when (engine-connection engine)
     (let ((nick (or nickname (parse-jid (engine-jid engine)))))
       (handler-case
-          ;; Send presence with MUC namespace to join
-          (xmpp:presence (engine-connection engine)
-                         :to (format nil "~a/~a" room-jid nick))
+          (xmpp-join-muc (engine-connection engine) room-jid nick)
         (error () nil)))))
-
-(defun engine-join-muc-raw (conn room-jid nickname)
-  "Join a MUC room using raw connection (for use during startup).
-   Sends presence with MUC namespace as required by XEP-0045."
-  (handler-case
-      ;; Use cl-xmpp's XML output directly
-      (let ((stream (xmpp::server-stream conn)))
-        (format stream "<presence to='~a/~a'><x xmlns='http://jabber.org/protocol/muc'/></presence>"
-                room-jid nickname)
-        (force-output stream))
-    (error () nil)))
 
 (defun engine-set-presence (engine show &optional status)
   "Set presence via the XMPP engine."
   (when (engine-connection engine)
     (handler-case
-        (xmpp:presence (engine-connection engine) :show show :status status)
+        (xmpp-send-presence (engine-connection engine) :show show :status status)
       (error () nil))))
-
-(defun engine-request-bookmarks (conn)
-  "Request bookmarks from the server for MUC rooms.
-   Try XEP-0402 PEP Native Bookmarks first, then fall back to XEP-0049 Private Storage."
-  (handler-case
-      (progn
-        ;; Try XEP-0402 PEP Native Bookmarks (modern Prosody uses this)
-        ;; Format: <iq type='get'><pubsub xmlns='http://jabber.org/protocol/pubsub'>
-        ;;           <items node='urn:xmpp:bookmarks:1'/></pubsub></iq>
-        (xmpp:with-iq (conn :type "get" :id "bookmarks-pep")
-          (cxml:with-element "pubsub"
-            (cxml:attribute "xmlns" "http://jabber.org/protocol/pubsub")
-            (cxml:with-element "items"
-              (cxml:attribute "node" "urn:xmpp:bookmarks:1"))))
-        ;; Also try XEP-0049 Private Storage as fallback
-        (xmpp:with-iq (conn :type "get" :id "bookmarks-private")
-          (cxml:with-element "query"
-            (cxml:attribute "xmlns" "jabber:iq:private")
-            (cxml:with-element "storage"
-              (cxml:attribute "xmlns" "storage:bookmarks")))))
-    (error () nil)))
-
-(defun engine-extract-bookmarks (stanza)
-  "Extract MUC conference bookmarks from an IQ result stanza (DOM version)."
-  (handler-case
-      (let ((xml-element (ignore-errors (slot-value stanza 'xmpp::xml-element))))
-        (when xml-element
-          (let ((rooms nil))
-            ;; Walk the XML looking for conference elements
-            (labels ((find-conferences (node)
-                       (when (and node (dom:element-p node))
-                         (let ((node-name (ignore-errors (dom:local-name node))))
-                           (when (and node-name (string= node-name "conference"))
-                             (let ((jid (dom:get-attribute node "jid"))
-                                   (room-name (dom:get-attribute node "name"))
-                                   (autojoin (dom:get-attribute node "autojoin")))
-                               (when jid
-                                 (push (list :jid jid
-                                             :name room-name
-                                             :autojoin (string= autojoin "true"))
-                                       rooms)))))
-                         (loop for child across (dom:child-nodes node)
-                               do (find-conferences child)))))
-              (find-conferences xml-element))
-            rooms)))
-    (error () nil)))
-
-(defun engine-extract-bookmarks-from-xml (xml-element)
-  "Extract MUC conference bookmarks from a cl-xmpp xml-element object."
-  (handler-case
-      (let ((rooms nil))
-        ;; Walk the xml-element tree looking for conference elements
-        (labels ((find-conferences (el)
-                   (when el
-                     (let ((name (ignore-errors (xmpp::name el))))
-                       ;; Check if this is a conference element
-                       (when (eq name :|conference|)
-                         (let* ((attrs (ignore-errors (xmpp::attributes el)))
-                                (jid (cdr (assoc :|jid| attrs)))
-                                (room-name (cdr (assoc :|name| attrs)))
-                                (autojoin (cdr (assoc :|autojoin| attrs))))
-                           (when jid
-                             (push (list :jid jid
-                                         :name room-name
-                                         :autojoin (string= autojoin "true"))
-                                   rooms)))))
-                     ;; Recurse into child elements
-                     (dolist (child (ignore-errors (xmpp::elements el)))
-                       (find-conferences child)))))
-          (find-conferences xml-element))
-        rooms)
-    (error () nil)))

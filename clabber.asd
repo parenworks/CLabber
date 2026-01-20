@@ -5,9 +5,12 @@
   :author "Glenn Thompson"
   :license "MIT"
   :version "0.1.0"
-  :depends-on (#:cl-xmpp
-               #:cl-xmpp-tls
-               #:cl-xmpp-sasl
+  :depends-on (#:usocket
+               #:cl+ssl
+               #:cxml
+               #:cl-base64
+               #:ironclad
+               #:babel
                #:croatoan
                #:bordeaux-threads
                #:alexandria
@@ -29,7 +32,14 @@
        (:file "log")))
      (:module "xmpp"
       :components
-      ((:file "engine")
+      ((:module "protocol"
+        :components
+        ((:file "xml")
+         (:file "stream")
+         (:file "sasl")
+         (:file "stanza")))
+       (:file "connection")
+       (:file "engine")
        (:file "handlers")
        (:file "reconnect")))
      (:module "ui"
