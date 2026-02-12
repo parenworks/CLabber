@@ -156,6 +156,24 @@
   "Send a message."
   (xmpp-send conn (make-message-stanza to body :type type)))
 
+(defun xmpp-send-omemo-message (conn to omemo-encrypted-el &key (type "chat"))
+  "Send an OMEMO-encrypted message. OMEMO-ENCRYPTED-EL is the <encrypted> xml-element."
+  (let ((msg-el (make-xml-element "message"
+                                  :attributes `(("to" . ,to)
+                                                ("type" . ,type)
+                                                ("id" . ,(generate-id)))
+                                  :children (list 
+                                             omemo-encrypted-el
+                                             ;; XEP-0380: Explicit Message Encryption hint
+                                             (make-xml-element "encryption"
+                                                               :namespace "urn:xmpp:eme:0"
+                                                               :attributes '(("namespace" . "urn:xmpp:omemo:2")
+                                                                             ("name" . "OMEMO")))
+                                             ;; Store hint for MAM
+                                             (make-xml-element "store"
+                                                               :namespace "urn:xmpp:hints")))))
+    (xmpp-stream-send (conn-stream conn) msg-el)))
+
 (defun xmpp-send-groupchat (conn room-jid body)
   "Send a groupchat message to a MUC."
   (xmpp-send conn (make-message-stanza room-jid body :type "groupchat")))
@@ -163,6 +181,20 @@
 (defun xmpp-send-presence (conn &key to type show status)
   "Send a presence stanza."
   (xmpp-send conn (make-presence-stanza :to to :type type :show show :status status)))
+
+;;; ============================================================
+;;; Message Carbons (XEP-0280)
+;;; ============================================================
+
+(defparameter +ns-carbons+ "urn:xmpp:carbons:2"
+  "Message Carbons namespace.")
+
+(defun xmpp-enable-carbons (conn)
+  "Enable Message Carbons (XEP-0280) so we receive copies of our own sent messages."
+  (let* ((enable-el (make-xml-element "enable" :namespace +ns-carbons+))
+         (iq (make-iq-stanza "set" :query enable-el :id "carbons-1")))
+    (xmpp-send conn iq)
+    (debug-log "Enabled Message Carbons (XEP-0280)")))
 
 ;;; ============================================================
 ;;; Receiving Stanzas
@@ -183,6 +215,30 @@
   (let* ((query (make-xml-element "query" :namespace +ns-roster+))
          (iq (make-iq-stanza "get" :query query)))
     (xmpp-send conn iq)))
+
+(defun xmpp-add-contact (conn jid &optional name)
+  "Add JID to roster and send subscription request."
+  ;; Roster set (add to roster)
+  (let* ((item-attrs (if name
+                         `(("jid" . ,jid) ("name" . ,name))
+                         `(("jid" . ,jid))))
+         (item (make-xml-element "item" :attributes item-attrs))
+         (query (make-xml-element "query" :namespace +ns-roster+ :children (list item)))
+         (iq (make-iq-stanza "set" :query query)))
+    (xmpp-send conn iq))
+  ;; Send subscription request
+  (xmpp-send-presence conn :to jid :type "subscribe"))
+
+(defun xmpp-remove-contact (conn jid)
+  "Remove JID from roster."
+  (let* ((item (make-xml-element "item" :attributes `(("jid" . ,jid) ("subscription" . "remove"))))
+         (query (make-xml-element "query" :namespace +ns-roster+ :children (list item)))
+         (iq (make-iq-stanza "set" :query query)))
+    (xmpp-send conn iq)))
+
+(defun xmpp-accept-subscription (conn jid)
+  "Accept a subscription request from JID."
+  (xmpp-send-presence conn :to jid :type "subscribed"))
 
 ;;; ============================================================
 ;;; Chat State Notifications (XEP-0085)

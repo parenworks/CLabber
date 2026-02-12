@@ -5,27 +5,34 @@
 (defclass roster-widget (widget) ())
 
 (defun draw-box (scr rect title)
-  "Draw a box with optional title using theme colors."
+  "Draw a box with optional title using theme box-drawing characters."
   (let* ((theme (current-theme))
          (color (theme-border-fg theme))
          (w (rw rect))
-         (h (rh rect)))
-    ;; Draw top border: +----+
+         (h (rh rect))
+         (box-h (string (theme-box-h theme)))
+         (box-v (string (theme-box-v theme)))
+         (box-tl (string (theme-box-tl theme)))
+         (box-tr (string (theme-box-tr theme)))
+         (box-bl (string (theme-box-bl theme)))
+         (box-br (string (theme-box-br theme)))
+         (horiz (make-string (- w 2) :initial-element (theme-box-h theme))))
+    ;; Draw top border: ╭────╮
     (setf (de.anvi.croatoan:cursor-position scr) (list (ry rect) (rx rect)))
     (de.anvi.croatoan:add-string scr 
-      (concatenate 'string "+" (make-string (- w 2) :initial-element #\-) "+")
+      (concatenate 'string box-tl horiz box-tr)
       :fgcolor color)
-    ;; Draw bottom border: +----+
+    ;; Draw bottom border: ╰────╯
     (setf (de.anvi.croatoan:cursor-position scr) (list (+ (ry rect) (1- h)) (rx rect)))
     (de.anvi.croatoan:add-string scr 
-      (concatenate 'string "+" (make-string (- w 2) :initial-element #\-) "+")
+      (concatenate 'string box-bl horiz box-br)
       :fgcolor color)
-    ;; Draw side borders: |
+    ;; Draw side borders: │
     (loop for y from 1 below (1- h) do
       (setf (de.anvi.croatoan:cursor-position scr) (list (+ (ry rect) y) (rx rect)))
-      (de.anvi.croatoan:add-string scr "|" :fgcolor color)
+      (de.anvi.croatoan:add-string scr box-v :fgcolor color)
       (setf (de.anvi.croatoan:cursor-position scr) (list (+ (ry rect) y) (+ (rx rect) (1- w))))
-      (de.anvi.croatoan:add-string scr "|" :fgcolor color))
+      (de.anvi.croatoan:add-string scr box-v :fgcolor color))
     ;; Draw title
     (when title
       (setf (de.anvi.croatoan:cursor-position scr) (list (ry rect) (+ (rx rect) 2)))

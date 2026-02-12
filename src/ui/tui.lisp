@@ -12,6 +12,158 @@
           (render widget scr rect st ly ui)))))
   (de.anvi.croatoan:refresh scr))
 
+(defun process-slash-command (text st ly ui engine)
+  "Process a /command. Returns T if handled, NIL otherwise."
+  (let* ((parts (str:split " " text :limit 2))
+         (cmd (string-downcase (first parts)))
+         (args (second parts))
+         (pane (focused-chat-pane ly)))
+    (cond
+      ;; /msg JID [message] - open chat with JID and optionally send message
+      ((string= cmd "/msg")
+       (when args
+         (let* ((msg-parts (str:split " " args :limit 2))
+                (jid (first msg-parts))
+                (body (second msg-parts)))
+           (state-ensure-buffer st jid :title jid)
+           (open-buffer! st jid)
+           (touch-open-buffer! st jid)
+           (setf (pane-buffer-id ly pane) jid)
+           (mark-visible-read! st jid)
+           (when body
+             (let ((cmd (make-instance 'send-message :to jid :body body)))
+               (execute cmd st ly engine)))))
+       (input-add-to-history ui text)
+       (input-clear ui)
+       t)
+      ;; /help - show available commands
+      ((string= cmd "/help")
+       (let ((buf (state-ensure-buffer st :system :title "System")))
+         (dolist (line '("Available commands:"
+                         "  /msg JID [message]  - Open chat (and send message)"
+                         "  /add JID [name]     - Add contact to roster"
+                         "  /remove JID         - Remove contact from roster"
+                         "  /join ROOM [nick]   - Join a MUC room"
+                         "  /leave [ROOM]       - Leave MUC (current or specified)"
+                         "  /omemo JID          - Init OMEMO session with JID"
+                         "  /quit               - Quit CLabber"
+                         "  /help               - Show this help"
+                         "Keybindings:"
+                         "  Tab        - Nick/JID completion in chat"
+                         "  Ctrl+O     - Cycle focus (roster/chat)"
+                         "  j/k ↑/↓   - Navigate roster (when focused)"
+                         "  Enter      - Open roster selection / Send message"
+                         "  Ctrl+N/P   - Next/prev roster item"
+                         "  Ctrl+W     - Toggle split pane"
+                         "  Ctrl+K     - Close current buffer"
+                         "  Ctrl+Q     - Quit"
+                         "  Alt+1-9    - Jump to buffer"))
+           (buffer-add-line buf line))
+         (setf (pane-buffer-id ly pane) :system))
+       (input-add-to-history ui text)
+       (input-clear ui)
+       t)
+      ;; /add JID [name] - add contact to roster
+      ((string= cmd "/add")
+       (let ((buf (state-ensure-buffer st :system :title "System")))
+         (if args
+             (let* ((add-parts (str:split " " args :limit 2))
+                    (jid (first add-parts))
+                    (name (second add-parts)))
+               (handler-case
+                   (progn
+                     (engine-add-contact engine jid name)
+                     (buffer-add-line buf (format nil "Added ~a to roster, subscription request sent" jid)))
+                 (error (e)
+                   (buffer-add-line buf (format nil "Error adding contact: ~a" e)))))
+             (buffer-add-line buf "Usage: /add JID [nickname]")))
+       (input-add-to-history ui text)
+       (input-clear ui)
+       t)
+      ;; /remove JID - remove contact from roster
+      ((string= cmd "/remove")
+       (let ((buf (state-ensure-buffer st :system :title "System")))
+         (if args
+             (handler-case
+                 (progn
+                   (engine-remove-contact engine args)
+                   (buffer-add-line buf (format nil "Removed ~a from roster" args)))
+               (error (e)
+                 (buffer-add-line buf (format nil "Error removing contact: ~a" e))))
+             (buffer-add-line buf "Usage: /remove JID")))
+       (input-add-to-history ui text)
+       (input-clear ui)
+       t)
+      ;; /join ROOM [nick] - join a MUC room
+      ((string= cmd "/join")
+       (let ((buf (state-ensure-buffer st :system :title "System")))
+         (if args
+             (let* ((join-parts (str:split " " args :limit 2))
+                    (room-jid (first join-parts))
+                    (nick (second join-parts)))
+               (handler-case
+                   (progn
+                     (engine-join-muc engine room-jid nick)
+                     ;; Add to roster as MUC
+                     (let ((existing (find room-jid (state-roster st)
+                                          :key #'roster-jid :test #'equal)))
+                       (unless existing
+                         (push (make-instance 'roster-item
+                                              :jid room-jid
+                                              :name room-jid
+                                              :presence "muc")
+                               (state-roster st))))
+                     ;; Open buffer for the room
+                     (state-ensure-buffer st room-jid :title room-jid)
+                     (open-buffer! st room-jid)
+                     (touch-open-buffer! st room-jid)
+                     (setf (pane-buffer-id ly pane) room-jid)
+                     (buffer-add-line buf (format nil "Joining ~a..." room-jid)))
+                 (error (e)
+                   (buffer-add-line buf (format nil "Error joining MUC: ~a" e)))))
+             (buffer-add-line buf "Usage: /join room@conference.server [nickname]")))
+       (input-add-to-history ui text)
+       (input-clear ui)
+       t)
+      ;; /leave [ROOM] - leave a MUC room (current buffer or specified)
+      ((string= cmd "/leave")
+       (let* ((buf (state-ensure-buffer st :system :title "System"))
+              (room-jid (or args (pane-buffer-id ly pane))))
+         (if (and room-jid (not (eql room-jid :system)))
+             (handler-case
+                 (progn
+                   (when (engine-connection engine)
+                     (xmpp-leave-muc (engine-connection engine) room-jid))
+                   (buffer-add-line buf (format nil "Left ~a" room-jid)))
+               (error (e)
+                 (buffer-add-line buf (format nil "Error leaving MUC: ~a" e))))
+             (buffer-add-line buf "Usage: /leave [room@conference.server]")))
+       (input-add-to-history ui text)
+       (input-clear ui)
+       t)
+      ;; /quit - quit the application
+      ((string= cmd "/quit")
+       (setf (state-running-p st) nil)
+       (input-clear ui)
+       t)
+      ;; /omemo JID - establish OMEMO session
+      ((string= cmd "/omemo")
+       (let ((buf (state-ensure-buffer st :system :title "System")))
+         (if args
+             (progn
+               (buffer-add-line buf (format nil "Fetching OMEMO keys for ~a..." args))
+               (handler-case
+                   (progn
+                     (engine-fetch-omemo-keys engine args)
+                     (buffer-add-line buf (format nil "OMEMO key fetch initiated for ~a" args)))
+                 (error (e)
+                   (buffer-add-line buf (format nil "OMEMO error: ~a" e)))))
+             (buffer-add-line buf "Usage: /omemo JID")))
+       (input-add-to-history ui text)
+       (input-clear ui)
+       t)
+      (t nil))))
+
 (defun process-input-send (st ly ui engine)
   "Process Enter key in chat pane - send message."
   (let* ((text (ui-input-text ui))
@@ -21,18 +173,23 @@
                         (find buf-id (state-roster st) 
                               :key #'roster-jid :test #'equal)))
          (is-muc (and roster-item (string= (roster-presence roster-item) "muc"))))
-    (if (and (> (length text) 0)
-             (not (eql buf-id :system)))
-        (progn
-          (let ((cmd (make-instance 'send-message :to buf-id :body text)))
-            (execute cmd st ly engine))
-          ;; Send active state after message (XEP-0085)
-          (engine-send-chat-state engine buf-id "active" 
-                                  :type (if is-muc "groupchat" "chat"))
-          (input-add-to-history ui text)
-          (input-clear ui))
-        ;; Debug: log why we didn't send
-        (state-log st (format nil "Not sending: text=~s buf=~a" text buf-id)))))
+    (when (> (length text) 0)
+      ;; Check for slash commands first
+      (when (and (> (length text) 0) (char= (char text 0) #\/))
+        (when (process-slash-command text st ly ui engine)
+          (return-from process-input-send)))
+      ;; Normal message send
+      (if (not (eql buf-id :system))
+          (progn
+            (let ((cmd (make-instance 'send-message :to buf-id :body text)))
+              (execute cmd st ly engine))
+            ;; Send active state after message (XEP-0085)
+            (engine-send-chat-state engine buf-id "active" 
+                                    :type (if is-muc "groupchat" "chat"))
+            (input-add-to-history ui text)
+            (input-clear ui))
+          ;; Debug: log why we didn't send
+          (state-log st (format nil "Not sending: text=~s buf=~a" text buf-id))))))
 
 (defun read-key-with-escape (scr)
   "Read a key, handling escape sequences for Alt+key combinations.
@@ -77,6 +234,8 @@
 
     (de.anvi.croatoan:with-screen (scr :input-echoing nil :cursor-visible nil)
       (setf (de.anvi.croatoan:input-blocking scr) nil)
+      ;; Disable XON/XOFF flow control so Ctrl+Q reaches the app
+      (de.anvi.ncurses:raw)
 
       (loop while (state-running-p st) do
         ;; 1) Apply engine events

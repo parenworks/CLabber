@@ -27,7 +27,9 @@
    (delay   :initarg :delay   :accessor message-delay   :initform nil
             :documentation "XEP-0203 delay timestamp (ISO 8601 string)")
    (chat-state :initarg :chat-state :accessor message-chat-state :initform nil
-               :documentation "XEP-0085 chat state: active, composing, paused, inactive, gone"))
+               :documentation "XEP-0085 chat state: active, composing, paused, inactive, gone")
+   (omemo-encrypted :initarg :omemo-encrypted :accessor message-omemo-encrypted :initform nil
+                    :documentation "XEP-0384 OMEMO encrypted element (xml-element or NIL)"))
   (:documentation "XMPP message stanza."))
 
 (defmethod print-object ((m message-stanza) stream)
@@ -94,9 +96,17 @@
       (setf current (xml-child current name))
       (unless current (return nil)))))
 
+(defun find-omemo-encrypted (el)
+  "Find OMEMO encrypted element in message. Returns the element or NIL.
+   Checks for both OMEMO namespace variants."
+  (or (xml-child-by-ns el "urn:xmpp:omemo:2")
+      (xml-child-by-ns el "eu.siacs.conversations.axolotl")
+      ;; Also check by element name as fallback
+      (xml-child el "encrypted")))
+
 (defun parse-message-stanza (el)
   "Parse a message stanza from XML.
-   Handles both regular messages and MAM result messages."
+   Handles regular messages, MAM result messages, and OMEMO encrypted messages."
   ;; Check for MAM result (XEP-0313)
   (let ((result-el (xml-child el "result")))
     (if result-el
@@ -104,21 +114,24 @@
         (let* ((forwarded-el (xml-child result-el "forwarded"))
                (delay-el (when forwarded-el (xml-child forwarded-el "delay")))
                (inner-msg (when forwarded-el (xml-child forwarded-el "message")))
-               (body-el (when inner-msg (xml-child inner-msg "body"))))
-          (when (and inner-msg body-el)
+               (body-el (when inner-msg (xml-child inner-msg "body")))
+               (omemo-el (when inner-msg (find-omemo-encrypted inner-msg))))
+          (when inner-msg
             (make-instance 'message-stanza
                            :id (or (xml-attr result-el "id") (xml-attr el "id"))
                            :to (xml-attr inner-msg "to")
                            :from (xml-attr inner-msg "from")
                            :type (or (xml-attr inner-msg "type") "groupchat")
-                           :body (decode-xml-entities (xml-text body-el))
+                           :body (when body-el (decode-xml-entities (xml-text body-el)))
                            :delay (when delay-el (xml-attr delay-el "stamp"))
+                           :omemo-encrypted omemo-el
                            :xml el)))
         ;; Regular message
         (let ((body-el (xml-child el "body"))
               (subject-el (xml-child el "subject"))
               (thread-el (xml-child el "thread"))
               (delay-el (xml-child el "delay"))
+              (omemo-el (find-omemo-encrypted el))
               ;; XEP-0085 chat state - look for state elements
               (chat-state (or (when (xml-child el "composing") "composing")
                               (when (xml-child el "active") "active")
@@ -135,6 +148,7 @@
                          :thread (when thread-el (xml-text thread-el))
                          :delay (when delay-el (xml-attr delay-el "stamp"))
                          :chat-state chat-state
+                         :omemo-encrypted omemo-el
                          :xml el)))))
 
 (defun parse-presence-stanza (el)

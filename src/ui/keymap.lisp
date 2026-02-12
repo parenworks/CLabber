@@ -18,6 +18,7 @@
 (defparameter +key-ctrl-t+ 20)
 (defparameter +key-ctrl-u+ 21)
 (defparameter +key-ctrl-w+ 23)
+(defparameter +key-ctrl-o+ 15)
 (defparameter +key-ctrl-x+ 24)
 (defparameter +key-tab+ 9)
 (defparameter +key-escape+ 27)
@@ -33,6 +34,12 @@
 (defparameter +key-alt-7+ (cons 27 #\7))
 (defparameter +key-alt-8+ (cons 27 #\8))
 (defparameter +key-alt-9+ (cons 27 #\9))
+
+;; Arrow keys (ncurses key codes)
+(defparameter +key-up+ 259)     ; KEY_UP
+(defparameter +key-down+ 258)   ; KEY_DOWN
+(defparameter +key-left+ 260)   ; KEY_LEFT
+(defparameter +key-right+ 261)  ; KEY_RIGHT
 
 ;; Alt+letter keys for participant navigation
 (defparameter +key-alt-j+ (cons 27 #\j))  ; Participant down
@@ -75,6 +82,10 @@
   ((command-class :initarg :command-class :reader binding-command-class)
    (command-args :initarg :command-args :initform nil :reader binding-command-args))
   (:documentation "Alt+key binding (ESC followed by character)."))
+
+(defclass roster-nav-key-binding (key-binding)
+  ((direction :initarg :direction :reader binding-direction))
+  (:documentation "Key binding that only works when roster is focused."))
 
 ;;; ============================================================
 ;;; Generic Functions for Key Binding Protocol
@@ -177,6 +188,15 @@
                (binding-command-class b)
                (binding-command-args b))))
 
+(defmethod binding-matches-p ((b roster-nav-key-binding) key context)
+  (and (eql (getf context :focus) :roster)
+       (eql (binding-key b) key)))
+
+(defmethod binding-commands ((b roster-nav-key-binding) context)
+  (declare (ignore context))
+  (list (make-instance 'roster-move :dir (binding-direction b))
+        (make-instance 'roster-open-selection)))
+
 ;;; ============================================================
 ;;; Global Keymap
 ;;; ============================================================
@@ -204,7 +224,7 @@
                         :description "Toggle split orientation")
          ;; Focus cycling
          (make-instance 'simple-key-binding
-                        :key +key-tab+
+                        :key +key-ctrl-o+
                         :command-class 'cycle-focus
                         :description "Cycle focus between panes")
          ;; Buffer close
@@ -234,6 +254,23 @@
                         :key +key-ctrl-p+
                         :direction -1
                         :description "Previous roster item")
+         ;; Roster navigation when focused - j/k and arrow keys
+         (make-instance 'roster-nav-key-binding
+                        :key #\j
+                        :direction 1
+                        :description "Roster down (when focused)")
+         (make-instance 'roster-nav-key-binding
+                        :key #\k
+                        :direction -1
+                        :description "Roster up (when focused)")
+         (make-instance 'roster-nav-key-binding
+                        :key +key-down+
+                        :direction 1
+                        :description "Roster down arrow (when focused)")
+         (make-instance 'roster-nav-key-binding
+                        :key +key-up+
+                        :direction -1
+                        :description "Roster up arrow (when focused)")
          ;; Participant navigation - Alt+J/K/O
          (make-instance 'alt-key-binding
                         :key +key-alt-j+

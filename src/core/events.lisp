@@ -47,6 +47,16 @@
 (defclass roster-update (event)
   ((items :initarg :items :reader evt-items)))
 
+(defclass roster-item-update (event)
+  ((jid :initarg :jid :reader evt-jid)
+   (name :initarg :name :initform nil :reader evt-name)
+   (subscription :initarg :subscription :initform nil :reader evt-subscription))
+  (:documentation "Single roster item added or updated via server push."))
+
+(defclass roster-remove (event)
+  ((jid :initarg :jid :reader evt-jid))
+  (:documentation "Roster item removed via server push."))
+
 (defclass bookmarks-update (event)
   ((rooms :initarg :rooms :reader evt-rooms))
   (:documentation "MUC bookmarks received from server."))
@@ -128,11 +138,11 @@
          ;; Determine buffer key:
          ;; - MUC private: use full JID (room/nick) as buffer
          ;; - MUC groupchat: use bare JID (room) as buffer
-         ;; - Regular DM: use full-from
+         ;; - Regular DM: use bare JID (resource varies per session)
          (from (cond
                  (is-muc-private full-from)  ; Private chat with room/nick
                  (is-muc bare-from)          ; Room groupchat
-                 (t full-from)))             ; Regular DM
+                 (t bare-from)))             ; Regular DM - use bare JID as buffer key
          (buf (state-ensure-buffer st from :title from))
          ;; Check if we've already seen this message
          (already-seen (and msg-id 
@@ -145,7 +155,8 @@
       (let* ((display-name (cond
                              (is-muc-private sender)  ; Show nick for private
                              (is-muc sender)          ; Show nick for groupchat
-                             (t full-from)))          ; Show full JID for DM
+                             (t (or (when roster-item (roster-name roster-item))
+                                    bare-from))))     ; Show roster name or bare JID for DM
              (timestamp (format-timestamp (evt-timestamp e))))
         (buffer-add-line buf (format nil "~@[~a ~]~a: ~a" timestamp display-name (evt-body e)))
         (cond
@@ -207,6 +218,31 @@
                               (state-roster st))))
     (setf (state-roster st) (append (evt-items e) mucs)))
   (state-log st (format nil "Roster updated: ~d contacts." (length (evt-items e))))
+  st)
+
+(defmethod apply-event ((e roster-item-update) (st app-state) (ly layout))
+  (declare (ignore ly))
+  (let* ((jid (evt-jid e))
+         (name (evt-name e))
+         (existing (find jid (state-roster st) :key #'roster-jid :test #'string=)))
+    (if existing
+        ;; Update existing item
+        (progn
+          (when name (setf (roster-name existing) name))
+          (state-log st (format nil "Roster updated: ~a" (or name jid))))
+        ;; Add new item
+        (progn
+          (push (make-instance 'roster-item :jid jid :name (or name jid))
+                (state-roster st))
+          (state-log st (format nil "Contact added: ~a" (or name jid))))))
+  st)
+
+(defmethod apply-event ((e roster-remove) (st app-state) (ly layout))
+  (declare (ignore ly))
+  (let ((jid (evt-jid e)))
+    (setf (state-roster st)
+          (remove jid (state-roster st) :key #'roster-jid :test #'string=))
+    (state-log st (format nil "Contact removed: ~a" jid)))
   st)
 
 (defmethod apply-event ((e error-event) (st app-state) (ly layout))

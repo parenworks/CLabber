@@ -64,6 +64,14 @@
   (remove-if-not (lambda (c) (string= (xml-name c) child-name))
                  (xml-children element)))
 
+(defun xml-child-by-ns (element namespace)
+  "Get the first child element with the given namespace."
+  (find-if (lambda (c)
+             (and (typep c 'xml-element)
+                  (let ((ns (xml-namespace c)))
+                    (and ns (string= ns namespace)))))
+           (xml-children element)))
+
 ;;; ============================================================
 ;;; XML Serialization (Output)
 ;;; ============================================================

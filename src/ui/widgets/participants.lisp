@@ -24,9 +24,10 @@
          (is-muc (and roster-item (string= (roster-presence roster-item) "muc")))
          ;; Selected participant index
          (selected-idx (layout-participant-index ly)))
-    ;; Draw border
+    ;; Draw border using theme box-drawing characters
     (de.anvi.croatoan:move scr y x)
-    (de.anvi.croatoan:add-string scr (make-string width :initial-element #\-))
+    (de.anvi.croatoan:add-string scr (make-string width :initial-element (theme-box-h theme))
+                                     :fgcolor (theme-border-fg theme))
     
     ;; Title
     (let ((title (if is-muc "Participants" "---")))

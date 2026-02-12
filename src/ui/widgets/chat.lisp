@@ -33,6 +33,83 @@
             (format nil "~a is typing..." (first nicks))
             (format nil "~{~a~^, ~} are typing..." nicks))))))
 
+(defun find-message-indent (line)
+  "Find the column where message text starts after '[timestamp] nick: '.
+   Returns the indent width, or 0 if no pattern found."
+  (let ((colon-space (search ": " line)))
+    (if colon-space
+        (min (+ colon-space 2) (length line))
+        0)))
+
+(defun wrap-text (text width)
+  "Word-wrap TEXT to fit WIDTH columns. Returns list of strings."
+  (when (<= width 0) (return-from wrap-text (list "")))
+  (if (<= (length text) width)
+      (list text)
+      (let ((result nil)
+            (start 0)
+            (len (length text)))
+        (loop while (< start len) do
+          (let ((end (min (+ start width) len)))
+            (if (>= end len)
+                (progn (push (subseq text start end) result)
+                       (setf start end))
+                (let ((break-pos (position #\Space text :start start :end end :from-end t)))
+                  (if (and break-pos (> break-pos start))
+                      (progn (push (subseq text start break-pos) result)
+                             (setf start (1+ break-pos)))
+                      (progn (push (subseq text start end) result)
+                             (setf start end)))))))
+        (nreverse result))))
+
+(defun wrap-line (line width)
+  "Wrap LINE to fit within WIDTH columns with hanging indent.
+   Continuation lines are indented to align with the message text
+   after the '[timestamp] nick: ' prefix."
+  (when (<= width 0) (return-from wrap-line (list "")))
+  (let* ((clean (substitute #\Space #\Newline line))
+         (indent (find-message-indent clean)))
+    (if (<= (length clean) width)
+        (list clean)
+        (let* ((pad (make-string indent :initial-element #\Space))
+               (cont-width (- width indent)))
+          (if (<= cont-width 4)
+              ;; Indent too large for useful wrapping, fall back to plain wrap
+              (wrap-text clean width)
+              ;; Wrap: first line at full width, continuations at reduced width
+              (let ((result nil)
+                    (start 0)
+                    (len (length clean))
+                    (first-p t))
+                (loop while (< start len) do
+                  (let* ((w (if first-p width cont-width))
+                         (end (min (+ start w) len)))
+                    (if (>= end len)
+                        ;; Last chunk
+                        (progn
+                          (push (if first-p
+                                    (subseq clean start end)
+                                    (concatenate 'string pad (subseq clean start end)))
+                                result)
+                          (setf start end))
+                        ;; Find word boundary
+                        (let ((break-pos (position #\Space clean :start start :end end :from-end t)))
+                          (if (and break-pos (> break-pos start))
+                              (progn
+                                (push (if first-p
+                                          (subseq clean start break-pos)
+                                          (concatenate 'string pad (subseq clean start break-pos)))
+                                      result)
+                                (setf start (1+ break-pos)))
+                              (progn
+                                (push (if first-p
+                                          (subseq clean start end)
+                                          (concatenate 'string pad (subseq clean start end)))
+                                      result)
+                                (setf start end)))))
+                    (setf first-p nil)))
+                (nreverse result)))))))
+
 (defmethod render ((w chat-widget) scr rect st ly ui)
   (declare (ignore ui))
   (let* ((pane (chat-pane w))
@@ -46,22 +123,37 @@
                         (if focused " *" ""))))
     (draw-box scr rect title)
     (when buf
-      (let* ((lines (buffer-lines buf))  ; Already newest-first (pushed)
-             ;; Reserve one line for typing indicator if someone is typing
+      (let* ((lines (buffer-lines buf))  ; Newest-first (pushed)
              (typing-line-reserved (if typing-str 1 0))
-             (max-lines (max 0 (- (rh rect) 2 typing-line-reserved)))
+             (max-rows (max 0 (- (rh rect) 2 typing-line-reserved)))
              (max-cols (max 0 (- (rw rect) 2)))
-             (visible-lines (subseq lines 0 (min (length lines) max-lines))))
-        ;; Render newest messages at top
-        (loop for i from 0
-              for line in visible-lines do
-          (setf (de.anvi.croatoan:cursor-position scr) (list (+ (ry rect) 1 i) (+ (rx rect) 1)))
-          ;; Strip newlines and truncate to fit
-          (let* ((clean-line (substitute #\Space #\Newline line))
-                 (nick (parse-nick-from-line clean-line))
+             ;; Build display rows: newest message at top, wrapped lines
+             ;; in reading order below their message.
+             ;; display-rows will be in top-down render order.
+             (display-rows nil)
+             (row-colors nil)
+             (total 0))
+        ;; Walk messages newest-first, wrap each, append in reading order
+        (dolist (line lines)
+          (when (>= total max-rows) (return))
+          (let* ((clean (substitute #\Space #\Newline line))
+                 (nick (parse-nick-from-line clean))
                  (color (nick-color nick))
-                 (display-line (subseq clean-line 0 (min (length clean-line) max-cols))))
-            (de.anvi.croatoan:add-string scr display-line :fgcolor color)))
+                 (wrapped (wrap-line clean max-cols)))
+            ;; Append wrapped lines in reading order (first part, then continuation)
+            (dolist (wl wrapped)
+              (when (>= total max-rows) (return))
+              (push (cons wl color) display-rows)
+              (incf total))))
+        ;; display-rows is now in reverse order (last pushed = first message's first line)
+        ;; Reverse to get top-down render order
+        (setf display-rows (nreverse display-rows))
+        ;; Render rows top-down
+        (loop for i from 0
+              for entry in display-rows do
+          (setf (de.anvi.croatoan:cursor-position scr)
+                (list (+ (ry rect) 1 i) (+ (rx rect) 1)))
+          (de.anvi.croatoan:add-string scr (car entry) :fgcolor (cdr entry)))
         ;; Show typing indicator at bottom of chat area
         (when typing-str
           (let ((typing-y (+ (ry rect) (- (rh rect) 2)))

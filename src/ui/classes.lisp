@@ -8,7 +8,15 @@
    (input-history :initform '() :accessor ui-input-history)
    (history-index :initform -1 :accessor ui-history-index)
    (composing-p :initform nil :accessor ui-composing-p
-                :documentation "T when user started typing and composing state should be sent")))
+                :documentation "T when user started typing and composing state should be sent")
+   (tab-candidates :initform nil :accessor ui-tab-candidates
+                   :documentation "List of tab-completion candidates")
+   (tab-index :initform 0 :accessor ui-tab-index
+              :documentation "Current index into tab-completion candidates")
+   (tab-prefix :initform "" :accessor ui-tab-prefix
+               :documentation "The prefix text before the word being completed")
+   (tab-word :initform "" :accessor ui-tab-word
+             :documentation "The partial word being completed")))
 
 (defclass widget () ())
 

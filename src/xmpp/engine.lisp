@@ -126,8 +126,29 @@
                        ;; Request bookmarks
                        (xmpp-get-bookmarks conn)
                        (debug-log "Requested bookmarks")
-                       ;; Publish OMEMO keys
+                       ;; Enable Message Carbons (XEP-0280)
+                       (handler-case
+                           (xmpp-enable-carbons conn)
+                         (error () nil))
+                       (debug-log "Enabled message carbons")
+                       ;; Initialize OMEMO device (load from disk or generate new)
+                       (unless *omemo-device*
+                         (setf *omemo-device* (load-omemo-device))
+                         (debug-log "OMEMO device initialized, ID: ~a" (device-id *omemo-device*)))
+                       ;; Fetch our own device list first so we can merge when publishing
                        (when *omemo-device*
+                         (debug-log "Fetching own device list before publishing...")
+                         (fetch-omemo-device-list conn (bare-jid (conn-bound-jid conn)))
+                         ;; Wait for the response to arrive and be processed
+                         (sleep 2)
+                         ;; Process any pending stanzas (device list responses)
+                         (loop for stanza = (handler-case (xmpp-receive conn)
+                                              (error () nil))
+                               while stanza
+                               do (engine-handle-stanza eng stanza))
+                         (debug-log "Own device list cached: ~a" 
+                                    (get-cached-device-list (bare-jid (conn-bound-jid conn))))
+                         ;; Now publish with merged device list
                          (publish-omemo-keys conn *omemo-device*)
                          (debug-log "Published OMEMO keys"))
                        ;; Config MUCs are now a fallback - only used if no server bookmarks
@@ -194,7 +215,8 @@
                (delay (message-delay stanza))
                (msg-id (stanza-id stanza))
                (msg-type (stanza-type stanza))
-               (chat-state (message-chat-state stanza)))
+               (chat-state (message-chat-state stanza))
+               (omemo-el (message-omemo-encrypted stanza)))
            ;; Handle chat state notifications (XEP-0085)
            (when (and from chat-state)
              (debug-log "Chat state from ~a: ~a" from chat-state)
@@ -202,6 +224,31 @@
                      (make-instance 'chat-state-event
                                     :from from
                                     :state chat-state)))
+           ;; Try OMEMO decryption if encrypted element present
+           ;; Always prefer OMEMO over fallback body (many clients send a
+           ;; fallback <body> like "I sent you an OMEMO encrypted message...")
+           (when from
+             (debug-log "Message processing: from=~a body=~a omemo=~a" 
+                        from (not (null body)) (not (null omemo-el))))
+           (when (and from omemo-el)
+             (debug-log "OMEMO encrypted message from ~a (fallback body: ~a) ns=~a xml=~a" 
+                        from (not (null body)) (xml-namespace omemo-el)
+                        (subseq (serialize-xml omemo-el) 0 (min 500 (length (serialize-xml omemo-el)))))
+             (let ((plaintext (omemo-decrypt-message omemo-el (bare-jid from))))
+               (if plaintext
+                   (progn
+                     (debug-log "OMEMO decrypted: ~a" (subseq plaintext 0 (min 50 (length plaintext))))
+                     (setf body plaintext))
+                   (progn
+                     ;; Decryption failed - re-publish our keys so sender discovers us
+                     (debug-log "OMEMO decryption failed, re-publishing keys and fetching sender's keys")
+                     (handler-case
+                         (progn
+                           (engine-publish-omemo-keys engine)
+                           (engine-fetch-omemo-keys engine (bare-jid from)))
+                       (error (e) (debug-log "OMEMO key refresh error: ~a" e)))
+                     (unless body
+                       (setf body "[OMEMO encrypted message - unable to decrypt. Keys re-published, ask sender to resend.]"))))))
            ;; Handle message body
            (when (and from body (> (length body) 0))
              (debug-log "Message from ~a type=~a: ~a" from msg-type (subseq body 0 (min 50 (length body))))
@@ -226,19 +273,27 @@
                                            "offline"
                                            "available"))))
                (debug-log "Presence from ~a: type=~a show=~a" from type- show)
-               ;; Check if this is MUC presence (has resource = nickname)
-               (if resource
-                   ;; MUC presence - track participant
-                   (q-push (engine-queue engine)
-                           (make-instance 'muc-presence
-                                          :room bare
-                                          :nick resource
-                                          :show presence-show))
-                   ;; Regular contact presence
-                   (q-push (engine-queue engine)
-                           (make-instance 'xmpp-presence
-                                          :jid from
-                                          :show presence-show)))))))
+               (cond
+                 ;; Auto-accept subscription requests
+                 ((and type- (string= type- "subscribe"))
+                  (debug-log "Auto-accepting subscription from ~a" from)
+                  (when (engine-connection engine)
+                    (xmpp-accept-subscription (engine-connection engine) bare)
+                    ;; Also subscribe back (mutual subscription)
+                    (xmpp-send-presence (engine-connection engine) :to bare :type "subscribe")))
+                 ;; MUC presence (has resource = nickname)
+                 (resource
+                  (q-push (engine-queue engine)
+                          (make-instance 'muc-presence
+                                         :room bare
+                                         :nick resource
+                                         :show presence-show)))
+                 ;; Regular contact presence
+                 (t
+                  (q-push (engine-queue engine)
+                          (make-instance 'xmpp-presence
+                                         :jid from
+                                         :show presence-show))))))))
         
         ;; IQ stanza
         (iq-stanza
@@ -249,6 +304,13 @@
              (debug-log "  Query: name=~a ns=~a" 
                         (when (typep query 'xml-element) (xml-name query))
                         (when (typep query 'xml-element) (xml-namespace query))))
+           ;; Handle roster pushes (type="set" from server)
+           (when (and (string= type- "set") query
+                      (typep query 'xml-element)
+                      (string= (xml-name query) "query")
+                      (or (string= (xml-namespace query) +ns-roster+)
+                          (search "roster" (or (xml-namespace query) ""))))
+             (engine-handle-roster-push engine query stanza))
            (when (and (string= type- "result") query)
              ;; Check for roster
              (when (and (typep query 'xml-element)
@@ -275,7 +337,9 @@
                          (engine-join-muc engine jid))))
                    ;; Push event to update UI (include all bookmarks, not just autojoin)
                    (q-push (engine-queue engine)
-                           (make-instance 'bookmarks-update :rooms bookmarks))))))))
+                           (make-instance 'bookmarks-update :rooms bookmarks)))))
+             ;; Check for OMEMO PubSub responses (device lists and bundles)
+             (engine-handle-omemo-iq engine stanza))))
         
         ;; Raw XML element (stream errors, etc)
         (xml-element
@@ -285,6 +349,38 @@
         (t nil))
     (error (e)
       (debug-log "Error handling stanza: ~a" e))))
+
+(defun engine-handle-roster-push (engine query stanza)
+  "Handle a server-pushed roster update (IQ type=set).
+   Acknowledges the push and updates the roster."
+  ;; Acknowledge the roster push with an empty result IQ
+  (when (engine-connection engine)
+    (let ((iq-id (stanza-id stanza)))
+      (when iq-id
+        (handler-case
+            (xmpp-stream-send (conn-stream (engine-connection engine))
+                              (make-xml-element "iq"
+                                                :attributes `(("type" . "result")
+                                                              ("id" . ,iq-id))))
+          (error () nil)))))
+  ;; Process each item in the push
+  (dolist (child (xml-children query))
+    (when (and (typep child 'xml-element)
+               (string= (xml-name child) "item"))
+      (let ((jid (xml-attr child "jid"))
+            (name (xml-attr child "name"))
+            (subscription (xml-attr child "subscription")))
+        (when jid
+          (debug-log "Roster push: ~a name=~a sub=~a" jid name subscription)
+          (if (and subscription (string= subscription "remove"))
+              ;; Contact removed
+              (q-push (engine-queue engine)
+                      (make-instance 'roster-remove :jid jid))
+              ;; Contact added or updated
+              (q-push (engine-queue engine)
+                      (make-instance 'roster-item-update
+                                     :jid jid :name name
+                                     :subscription subscription))))))))
 
 (defun engine-handle-roster (engine query)
   "Handle a roster query result."
@@ -302,14 +398,119 @@
               (make-instance 'roster-update :items (nreverse items))))))
 
 ;;; ============================================================
+;;; OMEMO IQ Handling
+;;; ============================================================
+
+(defun engine-handle-omemo-iq (engine stanza)
+  "Handle IQ results that may contain OMEMO PubSub data (device lists or bundles)."
+  (handler-case
+      (let* ((from (stanza-from stanza))
+             ;; For own PEP results, server omits 'from' - use our own JID
+             (effective-from (or from
+                                 (when (engine-connection engine)
+                                   (conn-bound-jid (engine-connection engine)))))
+             (query (iq-query stanza)))
+        (debug-log "OMEMO IQ handler: from=~a effective-from=~a query=~a raw=~a" 
+                    from effective-from (when query (xml-name query))
+                    (when query (subseq (serialize-xml query) 0 (min 800 (length (serialize-xml query))))))
+        (when (and effective-from (typep query 'xml-element)
+                   (string= (xml-name query) "pubsub"))
+          (let ((items-el (xml-child query "items")))
+            (when items-el
+              (let ((node (xml-attr items-el "node")))
+                (debug-log "OMEMO IQ: node=~a" node)
+                (when node
+                  (cond
+                    ;; Device list response (modern or legacy)
+                    ((or (string= node +omemo-devices-node+)
+                         (string= node +omemo-legacy-devices-node+))
+                     (let ((item-el (xml-child items-el "item")))
+                       (when item-el
+                         (let ((device-ids (parse-device-list-xml item-el)))
+                           (debug-log "OMEMO: Parsed device list: ~a" device-ids)
+                           (when device-ids
+                             (cache-device-list (bare-jid effective-from) device-ids)
+                             (debug-log "OMEMO: Cached device list for ~a: ~a (node=~a)" 
+                                        effective-from device-ids node))))))
+                    ;; Bundle response (modern or legacy)
+                    ((or (search +omemo-bundles-node+ node)
+                         (search +omemo-legacy-bundles-node+ node))
+                     (let* ((item-el (xml-child items-el "item"))
+                            (device-id-str (xml-attr item-el "id"))
+                            (device-id (when device-id-str 
+                                         (parse-integer device-id-str :junk-allowed t))))
+                       (when (and item-el device-id)
+                         (let ((bundle (parse-bundle-xml item-el (bare-jid effective-from) device-id)))
+                           (when bundle
+                             (cache-bundle bundle)
+                             (debug-log "OMEMO: Cached bundle for ~a device ~a (node=~a)" 
+                                        effective-from device-id node)))))))))))))
+    (error (e)
+      (debug-log "Error handling OMEMO IQ: ~a" e))))
+
+(defun engine-fetch-omemo-keys (engine jid)
+  "Fetch OMEMO device list for JID, then fetch bundles for each device.
+   This initiates the key discovery process needed before sending encrypted messages."
+  (when (engine-connection engine)
+    (handler-case
+        (progn
+          (fetch-omemo-device-list (engine-connection engine) jid)
+          (debug-log "Requested OMEMO device list for ~a" jid))
+      (error (e)
+        (debug-log "Error fetching OMEMO keys for ~a: ~a" jid e)))))
+
+(defun engine-fetch-omemo-bundles-for-jid (engine jid)
+  "Fetch OMEMO bundles for all known devices of JID."
+  (when (engine-connection engine)
+    (let ((device-ids (get-cached-device-list jid)))
+      (dolist (device-id device-ids)
+        (unless (get-cached-bundle jid device-id)
+          (handler-case
+              (progn
+                (fetch-omemo-bundle (engine-connection engine) jid device-id)
+                (debug-log "Requested OMEMO bundle for ~a device ~a" jid device-id))
+            (error (e)
+              (debug-log "Error fetching bundle for ~a device ~a: ~a" jid device-id e))))))))
+
+(defun engine-establish-omemo-session (engine jid)
+  "Establish OMEMO sessions with all devices of JID.
+   Requires device list and bundles to be cached first."
+  (let ((device-ids (get-cached-device-list jid)))
+    (dolist (device-id device-ids)
+      (unless (get-session jid device-id)
+        (let ((bundle (get-cached-bundle jid device-id)))
+          (when bundle
+            (handler-case
+                (progn
+                  (create-session-as-initiator jid device-id bundle)
+                  (debug-log "Established OMEMO session with ~a device ~a" jid device-id))
+              (error (e)
+                (debug-log "Error establishing session with ~a device ~a: ~a" 
+                           jid device-id e)))))))))
+
+;;; ============================================================
 ;;; Sending
 ;;; ============================================================
 
 (defun engine-send-message (engine to body)
-  "Send a message via the XMPP engine."
+  "Send a message via the XMPP engine.
+   Automatically uses OMEMO encryption when a session exists for the recipient."
   (when (engine-connection engine)
     (handler-case
-        (xmpp-send-message (engine-connection engine) to body)
+        (let ((bare (bare-jid to)))
+          (if (omemo-enabled-for-jid-p bare)
+              ;; Send OMEMO-encrypted
+              (let ((encrypted-el (omemo-encrypt-message bare body)))
+                (if encrypted-el
+                    (progn
+                      (debug-log "Sending OMEMO-encrypted message to ~a" to)
+                      (xmpp-send-omemo-message (engine-connection engine) to encrypted-el))
+                    ;; Fallback to plaintext if encryption failed
+                    (progn
+                      (debug-log "OMEMO encryption failed for ~a, sending plaintext" to)
+                      (xmpp-send-message (engine-connection engine) to body))))
+              ;; No OMEMO session, send plaintext
+              (xmpp-send-message (engine-connection engine) to body)))
       (error (e)
         (q-push (engine-queue engine)
                 (make-instance 'error-event
@@ -349,6 +550,30 @@
     (handler-case
         (xmpp-send-chat-state (engine-connection engine) to state :type type)
       (error () nil))))
+
+(defun engine-add-contact (engine jid &optional name)
+  "Add a contact to the roster and subscribe."
+  (when (engine-connection engine)
+    (handler-case
+        (xmpp-add-contact (engine-connection engine) jid name)
+      (error (e)
+        (debug-log "Error adding contact ~a: ~a" jid e)))))
+
+(defun engine-remove-contact (engine jid)
+  "Remove a contact from the roster."
+  (when (engine-connection engine)
+    (handler-case
+        (xmpp-remove-contact (engine-connection engine) jid)
+      (error (e)
+        (debug-log "Error removing contact ~a: ~a" jid e)))))
+
+(defun engine-accept-subscription (engine jid)
+  "Accept a subscription request from JID."
+  (when (engine-connection engine)
+    (handler-case
+        (xmpp-accept-subscription (engine-connection engine) jid)
+      (error (e)
+        (debug-log "Error accepting subscription from ~a: ~a" jid e)))))
 
 (defun engine-publish-omemo-keys (engine)
   "Publish OMEMO device list and key bundle to PEP."

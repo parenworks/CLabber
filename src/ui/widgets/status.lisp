@@ -12,7 +12,7 @@
          (split-str (if (layout-split-enabled-p ly) "on" "off"))
          (orient-str (symbol-name (layout-split-orientation ly)))
          (focus-str (symbol-name (layout-focused-pane ly)))
-         (line (format nil " ~a | Split:~a (~a) | Focus:~a | C-w:split C-t:orient Tab:focus C-q:quit"
+         (line (format nil " ~a | Split:~a (~a) | Focus:~a | C-w:split C-t:orient C-o:focus C-q:quit"
                        status-str split-str orient-str focus-str))
          (max-w (rw rect))
          (color (theme-status-fg theme)))

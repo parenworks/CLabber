@@ -179,13 +179,13 @@
    :unread-fg :yellow
    :mention-fg :magenta
    :roster-selected-fg :magenta
-   ;; Use ASCII box chars for terminal compatibility
-   :box-h #\-
-   :box-v #\|
-   :box-tl #\+
-   :box-tr #\+
-   :box-bl #\+
-   :box-br #\+)
+   ;; Rounded Unicode box-drawing characters
+   :box-h #\─
+   :box-v #\│
+   :box-tl #\╭
+   :box-tr #\╮
+   :box-bl #\╰
+   :box-br #\╯)
   (:documentation "Tokyo Night color scheme with ASCII box characters."))
 
 ;;; ============================================================
