@@ -498,19 +498,11 @@
   (when (engine-connection engine)
     (handler-case
         (let ((bare (bare-jid to)))
-          (if (omemo-enabled-for-jid-p bare)
-              ;; Send OMEMO-encrypted
-              (let ((encrypted-el (omemo-encrypt-message bare body)))
-                (if encrypted-el
-                    (progn
-                      (debug-log "Sending OMEMO-encrypted message to ~a" to)
-                      (xmpp-send-omemo-message (engine-connection engine) to encrypted-el))
-                    ;; Fallback to plaintext if encryption failed
-                    (progn
-                      (debug-log "OMEMO encryption failed for ~a, sending plaintext" to)
-                      (xmpp-send-message (engine-connection engine) to body))))
-              ;; No OMEMO session, send plaintext
-              (xmpp-send-message (engine-connection engine) to body)))
+          ;; TODO: OMEMO encryption sending not yet implemented (Signal Protocol WhisperMessage construction)
+          ;; For now, always send plaintext. Decryption of incoming OMEMO messages works.
+          (when (omemo-enabled-for-jid-p bare)
+            (debug-log "OMEMO session exists for ~a but sending not yet implemented, using plaintext" bare))
+          (xmpp-send-message (engine-connection engine) to body))
       (error (e)
         (q-push (engine-queue engine)
                 (make-instance 'error-event
