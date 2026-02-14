@@ -164,11 +164,13 @@
                               ;; Expire after 10 seconds
                               (< (- (get-universal-time) (cdr indicator)) 10))
                      (format nil "~a is typing... " (car indicator))))))
+             (correct-text (if (and buf (buffer-correcting-p buf)) "✏️ editing " ""))
              (omemo-text (if (and buf (buffer-omemo-p buf)) "🔒 OMEMO " "")))
         (setf (status-bar-right (layout-status ly))
-              (if typing-text
-                  (concatenate 'string typing-text omemo-text)
-                  omemo-text))))
+              (concatenate 'string
+                (or typing-text "")
+                correct-text
+                omemo-text)))) ;; closes concatenate, setf, let*, when
     ;; Update buffer bar
     (when (layout-buffer-bar ly)
       (setf (buffer-bar-buffers (layout-buffer-bar ly))
@@ -272,6 +274,15 @@
            (setf (participants-selected-index panel) 0
                  (app-focus-mode app) :participants)))
        t)
+      ;; Escape: cancel correction mode
+      ((eql (key-event-code key) +key-escape+)
+       (let ((buf (app-current-buffer app))
+             (input (layout-input ly)))
+         (when (and buf input (buffer-correcting-p buf))
+           (setf (buffer-correcting-p buf) nil
+                 (input-bar-text input) ""
+                 (input-bar-cursor-pos input) 0)))
+       t)
       ;; Ctrl-W: cycle split mode
       ((and (key-event-ctrl-p key) (eql (key-event-char key) #\w))
        (let ((current (layout-split-mode (app-layout app))))
@@ -281,9 +292,22 @@
                  (:horizontal :vertical)
                  (:vertical nil))))
        (app-update-layout app) t)
-      ;; Up arrow: previous buffer
+      ;; Up arrow: recall last sent message (if input empty) or previous buffer
       ((eql (key-event-code key) +key-up+)
-       (app-switch-buffer app :prev) t)
+       (let ((input (layout-input ly))
+             (buf (app-current-buffer app)))
+         (if (and input buf
+                  (= (length (input-bar-text input)) 0)
+                  (buffer-last-sent-text buf)
+                  (not (buffer-correcting-p buf)))
+             ;; Recall last sent message for correction
+             (progn
+               (setf (input-bar-text input) (buffer-last-sent-text buf)
+                     (input-bar-cursor-pos input) (length (buffer-last-sent-text buf))
+                     (buffer-correcting-p buf) t))
+             ;; Normal: switch buffer
+             (app-switch-buffer app :prev)))
+       t)
       ;; Down arrow: next buffer
       ((eql (key-event-code key) +key-down+)
        (app-switch-buffer app :next) t)
@@ -529,26 +553,39 @@
                              *omemo-device-id*)))
         (debug-log "Send: to=~a type=~a omemo=~a text=~a" jid (buffer-type buf) use-omemo text)
         (when conn
-          (handler-case
-              (cond
-                ((eq (buffer-type buf) :muc)
-                 (xmpp-send-groupchat conn jid text))
-                ;; OMEMO-encrypted DM
-                (use-omemo
-                 (let* ((our-jid (bare-jid (conn-bound-jid conn)))
-                        (encrypted-el (app-build-omemo-encrypted jid text our-jid)))
-                   (if encrypted-el
-                       (xmpp-send-omemo-message conn jid encrypted-el)
-                       (progn
-                         (debug-log "OMEMO encrypt failed, sending plaintext")
-                         (xmpp-send-message conn jid text)))))
-                ;; Plain DM
-                ((eq (buffer-type buf) :dm)
-                 (xmpp-send-message conn jid text)))
-            (error (e)
-              (debug-log "Send error: ~a" e)
-              (buffer-add-message buf
-                (make-message :text (format nil "Send error: ~A" e) :level :error)))))
+          (let ((msg-id nil)
+                (correcting (buffer-correcting-p buf))
+                (replace-id (buffer-last-sent-id buf)))
+            (handler-case
+                (cond
+                  ;; Correction of previous message
+                  ((and correcting replace-id)
+                   (setf msg-id (xmpp-send-correction conn jid text replace-id
+                                   :type (if (eq (buffer-type buf) :muc) "groupchat" "chat"))))
+                  ((eq (buffer-type buf) :muc)
+                   (setf msg-id (xmpp-send-groupchat conn jid text)))
+                  ;; OMEMO-encrypted DM
+                  (use-omemo
+                   (let* ((our-jid (bare-jid (conn-bound-jid conn)))
+                          (encrypted-el (app-build-omemo-encrypted jid text our-jid)))
+                     (if encrypted-el
+                         (xmpp-send-omemo-message conn jid encrypted-el)
+                         (progn
+                           (debug-log "OMEMO encrypt failed, sending plaintext")
+                           (setf msg-id (xmpp-send-message conn jid text))))))
+                  ;; Plain DM
+                  ((eq (buffer-type buf) :dm)
+                   (setf msg-id (xmpp-send-message conn jid text))))
+              (error (e)
+                (debug-log "Send error: ~a" e)
+                (buffer-add-message buf
+                  (make-message :text (format nil "Send error: ~A" e) :level :error))))
+            ;; Track last sent message for corrections
+            (when msg-id
+              (setf (buffer-last-sent-id buf) msg-id
+                    (buffer-last-sent-text buf) text))
+            ;; Clear correction state
+            (setf (buffer-correcting-p buf) nil)))
         ;; Add to local buffer (for DMs only; MUC messages echo back from server)
         (when (eq (buffer-type buf) :dm)
           (let ((nick (if conn
@@ -726,12 +763,20 @@
                  ;; Mark buffer as OMEMO-capable if we decrypted successfully
                  (when is-encrypted
                    (setf (buffer-omemo-p buf) t))
-                 (buffer-add-message buf
-                   (make-message :text display-body :nick nick
-                                 :timestamp (if delay
-                                                (or (ignore-errors (parse-xmpp-timestamp delay))
-                                                    (get-universal-time))
-                                                (get-universal-time)))))))
+                 ;; Handle message correction (XEP-0308)
+                 (let ((replace-id (clabber.xmpp::message-replace-id stanza))
+                       (msg-ts (if delay
+                                   (or (ignore-errors (parse-xmpp-timestamp delay))
+                                       (get-universal-time))
+                                   (get-universal-time))))
+                   (if (and replace-id (buffer-correct-message buf replace-id display-body))
+                       ;; Correction applied to existing message
+                       (debug-log "Corrected message ~a" replace-id)
+                       ;; New message
+                       (buffer-add-message buf
+                         (make-message :text display-body :nick nick
+                                       :timestamp msg-ts
+                                       :stanza-id (stanza-id stanza))))))))
            ;; If OMEMO message but we couldn't decrypt, show indicator
            ;; (but not for key-transport messages which have no payload)
            (when (and omemo-el (not decrypted-body) from

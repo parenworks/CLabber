@@ -169,6 +169,8 @@
            #:message-timestamp
            #:message-level
            #:message-highlight-p
+           #:message-stanza-id
+           #:message-edited-p
            ;; Buffer
            #:buffer
            #:make-buffer
@@ -183,7 +185,11 @@
            #:buffer-omemo-p
            #:buffer-topic
            #:buffer-modes
+           #:buffer-last-sent-id
+           #:buffer-last-sent-text
+           #:buffer-correcting-p
            #:buffer-add-message
+           #:buffer-correct-message
            #:buffer-add-participant
            #:buffer-remove-participant
            #:buffer-participant-nicks
@@ -319,6 +325,7 @@
            #:xmpp-send-message
            #:xmpp-send-omemo-message
            #:xmpp-send-groupchat
+           #:xmpp-send-correction
            #:xmpp-send-presence
            #:xmpp-send-chat-state
            #:xmpp-receive

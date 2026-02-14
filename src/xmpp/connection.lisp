@@ -125,8 +125,10 @@
   (xmpp-stream-send (conn-stream conn) (stanza-to-xml stanza)))
 
 (defun xmpp-send-message (conn to body &key (type "chat"))
-  "Send a message."
-  (xmpp-send conn (make-message-stanza to body :type type)))
+  "Send a message. Returns the stanza ID."
+  (let ((stanza (make-message-stanza to body :type type)))
+    (xmpp-send conn stanza)
+    (stanza-id stanza)))
 
 (defun xmpp-send-omemo-message (conn to omemo-encrypted-el &key (type "chat"))
   "Send an OMEMO-encrypted message."
@@ -142,7 +144,23 @@
     (xmpp-stream-send (conn-stream conn) msg-el)))
 
 (defun xmpp-send-groupchat (conn room-jid body)
-  (xmpp-send conn (make-message-stanza room-jid body :type "groupchat")))
+  "Send a groupchat message. Returns the stanza ID."
+  (let ((stanza (make-message-stanza room-jid body :type "groupchat")))
+    (xmpp-send conn stanza)
+    (stanza-id stanza)))
+
+(defun xmpp-send-correction (conn to body replace-id &key (type "chat"))
+  "Send a message correction (XEP-0308). Returns the new stanza ID."
+  (let* ((id (generate-id))
+         (msg-el (make-xml-element "message"
+                   :attributes `(("to" . ,to) ("type" . ,type) ("id" . ,id))
+                   :children (list
+                     (make-xml-element "body" :text body)
+                     (make-xml-element "replace"
+                       :namespace "urn:xmpp:message-correct:0"
+                       :attributes `(("id" . ,replace-id)))))))
+    (xmpp-stream-send (conn-stream conn) msg-el)
+    id))
 
 (defun xmpp-send-presence (conn &key to type show status)
   (xmpp-send conn (make-presence-stanza :to to :type type :show show :status status)))

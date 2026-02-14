@@ -143,6 +143,11 @@
                          (bold))
                        (format *terminal-io* "~A" nick)
                        (reset)
+                       ;; Show (edited) marker for corrected messages
+                       (when (clabber.model:message-edited-p msg)
+                         (emit-fg (theme-system-color theme) *terminal-io*)
+                         (princ " (edited)" *terminal-io*)
+                         (reset))
                        (princ ": " *terminal-io*)))
                    ;; Message text with wrapping
                    (when lvl-color (emit-fg lvl-color *terminal-io*))

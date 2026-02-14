@@ -13,14 +13,19 @@
    (level :initarg :level :accessor message-level :initform nil
           :documentation "Message level: nil (normal), :join, :part, :error, :system, :presence")
    (highlight-p :initarg :highlight :accessor message-highlight-p :initform nil
-                :documentation "Whether this message mentions us"))
+                :documentation "Whether this message mentions us")
+   (stanza-id :initarg :stanza-id :accessor message-stanza-id :initform nil
+              :documentation "XMPP stanza ID for message correction")
+   (edited-p :initarg :edited :accessor message-edited-p :initform nil
+             :documentation "Whether this message has been edited"))
   (:documentation "A single chat message"))
 
-(defun make-message (&key text nick timestamp level highlight)
+(defun make-message (&key text nick timestamp level highlight stanza-id)
   (make-instance 'message
                  :text text :nick nick
                  :timestamp (or timestamp (get-universal-time))
-                 :level level :highlight highlight))
+                 :level level :highlight highlight
+                 :stanza-id stanza-id))
 
 ;;; Buffer class - represents a chat window (DM, MUC, or system)
 
@@ -45,7 +50,13 @@
           :documentation "IRC channel modes string (e.g. +Cnt)")
    (scroll-offset :initform 0 :accessor buffer-scroll-offset)
    (omemo-p :initform nil :accessor buffer-omemo-p
-            :documentation "Whether OMEMO encryption is active"))
+            :documentation "Whether OMEMO encryption is active")
+   (last-sent-id :initform nil :accessor buffer-last-sent-id
+                 :documentation "Stanza ID of last message we sent (for corrections)")
+   (last-sent-text :initform nil :accessor buffer-last-sent-text
+                   :documentation "Text of last message we sent (for corrections)")
+   (correcting-p :initform nil :accessor buffer-correcting-p
+                 :documentation "Whether we are currently editing a correction"))
   (:documentation "A chat buffer (DM, MUC, or system)"))
 
 (defun make-buffer (&key name display-name (type :dm))
@@ -87,6 +98,16 @@
   (when (message-highlight-p message)
     (setf (buffer-mention-p buffer) t))
   message)
+
+(defun buffer-correct-message (buffer replace-id new-text)
+  "Find a message by stanza-id and replace its text. Returns T if found."
+  (let ((msgs (buffer-messages buffer)))
+    (loop for i from (max 0 (- (fill-pointer msgs) 100)) below (fill-pointer msgs)
+          for m = (aref msgs i)
+          when (and (message-stanza-id m) (string= (message-stanza-id m) replace-id))
+          do (setf (message-text m) new-text
+                   (message-edited-p m) t)
+             (return t))))
 
 (defun buffer-message-count (buffer)
   (fill-pointer (buffer-messages buffer)))

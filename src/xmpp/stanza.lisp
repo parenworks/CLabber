@@ -27,7 +27,9 @@
    (chat-state :initarg :chat-state :accessor message-chat-state :initform nil
                :documentation "XEP-0085 chat state")
    (omemo-encrypted :initarg :omemo-encrypted :accessor message-omemo-encrypted :initform nil
-                    :documentation "XEP-0384 OMEMO encrypted element")))
+                    :documentation "XEP-0384 OMEMO encrypted element")
+   (replace-id :initarg :replace-id :accessor message-replace-id :initform nil
+               :documentation "XEP-0308 message correction: ID of message being replaced")))
 
 ;;; ============================================================
 ;;; Presence Stanza
@@ -116,6 +118,7 @@
               (thread-el (xml-child el "thread"))
               (delay-el (xml-child el "delay"))
               (omemo-el (find-omemo-encrypted el))
+              (replace-el (xml-child el "replace"))
               (chat-state (or (when (xml-child el "composing") "composing")
                               (when (xml-child el "active") "active")
                               (when (xml-child el "paused") "paused")
@@ -132,6 +135,7 @@
                          :delay (when delay-el (xml-attr delay-el "stamp"))
                          :chat-state chat-state
                          :omemo-encrypted omemo-el
+                         :replace-id (when replace-el (xml-attr replace-el "id"))
                          :xml el)))))
 
 (defun parse-presence-stanza (el)
