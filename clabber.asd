@@ -37,6 +37,7 @@
       :components
       ((:file "signal-ffi")
        (:file "omemo")))
+     (:file "emoji")
      (:file "app")
      (:file "main"))))
   :build-operation "program-op"

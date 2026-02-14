@@ -43,7 +43,18 @@
                       :documentation "JID -> (nick . timestamp) of who is typing")
    ;; Focus mode for panel navigation
    (focus-mode :initform :input :accessor app-focus-mode
-               :documentation "Current focus: :input or :participants"))
+               :documentation "Current focus: :input or :participants")
+   ;; Emoji picker state
+   (emoji-active-p :initform nil :accessor app-emoji-active-p
+                   :documentation "Whether the emoji picker popup is showing")
+   (emoji-prefix :initform "" :accessor app-emoji-prefix
+                 :documentation "Current search prefix after :")
+   (emoji-matches :initform nil :accessor app-emoji-matches
+                  :documentation "List of (code . emoji) matching current prefix")
+   (emoji-index :initform 0 :accessor app-emoji-index
+                :documentation "Selected index in emoji matches")
+   (emoji-colon-pos :initform 0 :accessor app-emoji-colon-pos
+                    :documentation "Position of the : that started emoji search"))
   (:documentation "Main CLabber application state"))
 
 (defun make-app ()
@@ -196,8 +207,69 @@
              (bar-idx (or (position active-buf ordered) 0)))
         (setf (buffer-bar-buffers (layout-buffer-bar ly)) ordered)
         (setf (buffer-bar-active-index (layout-buffer-bar ly)) bar-idx)))
-    ;; Render all
-    (layout-render-all ly)))
+    ;; Render all (with emoji popup inside the sync update)
+    (begin-sync-update)
+    (when (layout-roster ly) (panel-render (layout-roster ly)))
+    (when (layout-chat-a ly) (panel-render (layout-chat-a ly)))
+    (when (layout-chat-b ly) (panel-render (layout-chat-b ly)))
+    (when (layout-participants ly) (panel-render (layout-participants ly)))
+    (when (layout-buffer-bar ly) (panel-render (layout-buffer-bar ly)))
+    (when (layout-status ly) (panel-render (layout-status ly)))
+    (when (layout-input ly) (panel-render (layout-input ly)))
+    ;; Render emoji picker popup inside sync update so it doesn't flicker
+    (when (app-emoji-active-p app)
+      (let* ((matches (app-emoji-matches app))
+             (max-show (min 8 (length matches)))
+             (input (layout-input ly))
+             (popup-w 30)
+             (popup-h (+ max-show 2))
+             (popup-x (max 1 (panel-x input)))
+             (popup-y (max 1 (- (panel-y input) popup-h)))
+             (theme (current-theme)))
+        (when (> max-show 0)
+          ;; Draw popup background
+          (loop for row from popup-y below (+ popup-y popup-h)
+                do (cursor-to row popup-x)
+                   (emit-bg (theme-bg theme) *terminal-io*)
+                   (emit-fg (theme-border-active theme) *terminal-io*)
+                   (princ (make-string popup-w :initial-element #\Space) *terminal-io*))
+          ;; Top border
+          (cursor-to popup-y popup-x)
+          (emit-fg (theme-border-active theme) *terminal-io*)
+          (princ (concatenate 'string "┌" (make-string (- popup-w 2) :initial-element #\─) "┐")
+                 *terminal-io*)
+          ;; Bottom border
+          (cursor-to (+ popup-y popup-h -1) popup-x)
+          (princ (concatenate 'string "└" (make-string (- popup-w 2) :initial-element #\─) "┘")
+                 *terminal-io*)
+          ;; Emoji entries
+          (loop for i from 0 below max-show
+                for entry in matches
+                for row = (+ popup-y 1 i)
+                do (cursor-to row popup-x)
+                   (emit-bg (theme-bg theme) *terminal-io*)
+                   (emit-fg (theme-border-active theme) *terminal-io*)
+                   (princ "│" *terminal-io*)
+                   (if (= i (app-emoji-index app))
+                       (progn (inverse) (bold))
+                       (emit-fg (theme-fg theme) *terminal-io*))
+                   (let* ((code (car entry))
+                          (emoji (cdr entry))
+                          (label (format nil " ~A :~A:" emoji code))
+                          (max-label (- popup-w 2))
+                          (display (if (> (length label) max-label)
+                                       (subseq label 0 max-label)
+                                       (concatenate 'string label
+                                         (make-string (- max-label (length label))
+                                                      :initial-element #\Space)))))
+                     (princ display *terminal-io*))
+                   (reset)
+                   (emit-fg (theme-border-active theme) *terminal-io*)
+                   (emit-bg (theme-bg theme) *terminal-io*)
+                   (princ "│" *terminal-io*))
+          (reset))))
+    (end-sync-update)
+    (force-output *terminal-io*)))
 
 ;;; ============================================================
 ;;; Input handling
@@ -266,6 +338,87 @@
   ;; Dispatch to participants panel handler if focused
   (when (eq (app-focus-mode app) :participants)
     (return-from app-handle-input (app-handle-participants-input app key)))
+  ;; Handle emoji picker input if active
+  (when (app-emoji-active-p app)
+    (let ((input (layout-input (app-layout app))))
+      (cond
+        ;; Escape: dismiss picker
+        ((eql (key-event-code key) +key-escape+)
+         (setf (app-emoji-active-p app) nil))
+        ;; Up arrow: move selection up
+        ((eql (key-event-code key) +key-up+)
+         (when (> (length (app-emoji-matches app)) 0)
+           (setf (app-emoji-index app)
+                 (mod (1- (app-emoji-index app))
+                      (min 8 (length (app-emoji-matches app)))))))
+        ;; Down arrow: move selection down
+        ((eql (key-event-code key) +key-down+)
+         (when (> (length (app-emoji-matches app)) 0)
+           (setf (app-emoji-index app)
+                 (mod (1+ (app-emoji-index app))
+                      (min 8 (length (app-emoji-matches app)))))))
+        ;; Tab or Enter: insert selected emoji
+        ((or (eql (key-event-code key) +key-tab+)
+             (eql (key-event-code key) +key-enter+))
+         (when (and (app-emoji-matches app)
+                    (< (app-emoji-index app) (length (app-emoji-matches app))))
+           (let* ((entry (nth (app-emoji-index app) (app-emoji-matches app)))
+                  (emoji (cdr entry))
+                  (text (input-bar-text input))
+                  (colon-pos (app-emoji-colon-pos app))
+                  (cursor (input-bar-cursor-pos input))
+                  (new-text (concatenate 'string
+                              (subseq text 0 colon-pos)
+                              emoji
+                              (subseq text cursor)))
+                  (new-pos (+ colon-pos (length emoji))))
+             (setf (input-bar-text input) new-text
+                   (input-bar-cursor-pos input) new-pos)))
+         (setf (app-emoji-active-p app) nil))
+        ;; Backspace: remove char from prefix or dismiss if empty
+        ((eql (key-event-code key) +key-backspace+)
+         (let ((pos (input-bar-cursor-pos input))
+               (text (input-bar-text input)))
+           (when (> pos 0)
+             (setf (input-bar-text input)
+                   (concatenate 'string (subseq text 0 (1- pos)) (subseq text pos)))
+             (decf (input-bar-cursor-pos input))
+             ;; Update prefix or dismiss if we backspaced past the :
+             (if (<= (input-bar-cursor-pos input) (app-emoji-colon-pos app))
+                 (setf (app-emoji-active-p app) nil)
+                 (let ((new-prefix (subseq (input-bar-text input)
+                                           (1+ (app-emoji-colon-pos app))
+                                           (input-bar-cursor-pos input))))
+                   (setf (app-emoji-prefix app) new-prefix
+                         (app-emoji-matches app) (emoji-complete new-prefix)
+                         (app-emoji-index app) 0))))))
+        ;; Regular character: add to prefix and update matches
+        ((key-event-char key)
+         (let ((ch (key-event-char key)))
+           (when (and (graphic-char-p ch) (not (char= ch #\Space)))
+             (let ((pos (input-bar-cursor-pos input))
+                   (text (input-bar-text input)))
+               (setf (input-bar-text input)
+                     (concatenate 'string (subseq text 0 pos) (string ch) (subseq text pos)))
+               (incf (input-bar-cursor-pos input))
+               (let ((new-prefix (subseq (input-bar-text input)
+                                         (1+ (app-emoji-colon-pos app))
+                                         (input-bar-cursor-pos input))))
+                 (setf (app-emoji-prefix app) new-prefix
+                       (app-emoji-matches app) (emoji-complete new-prefix)
+                       (app-emoji-index app) 0)
+                 ;; Dismiss if no matches
+                 (unless (app-emoji-matches app)
+                   (setf (app-emoji-active-p app) nil)))))
+           ;; Space dismisses picker
+           (when (char= ch #\Space)
+             (let ((pos (input-bar-cursor-pos input))
+                   (text (input-bar-text input)))
+               (setf (input-bar-text input)
+                     (concatenate 'string (subseq text 0 pos) (string ch) (subseq text pos)))
+               (incf (input-bar-cursor-pos input)))
+             (setf (app-emoji-active-p app) nil)))))
+      (return-from app-handle-input t)))
   ;; Reset TAB completion state on any non-TAB key
   (unless (eql (key-event-code key) +key-tab+)
     (setf (app-tab-prefix app) nil
@@ -452,7 +605,15 @@
                  (text (input-bar-text input)))
              (setf (input-bar-text input)
                    (concatenate 'string (subseq text 0 pos) (string ch) (subseq text pos)))
-             (incf (input-bar-cursor-pos input)))
+             (incf (input-bar-cursor-pos input))
+             ;; Activate emoji picker when : is typed
+             (when (char= ch #\:)
+               (let ((matches (emoji-complete "")))
+                 (setf (app-emoji-active-p app) t
+                       (app-emoji-prefix app) ""
+                       (app-emoji-matches app) matches
+                       (app-emoji-index app) 0
+                       (app-emoji-colon-pos app) (1- (input-bar-cursor-pos input))))))
            ;; Send <composing> chat state on first keystroke
            (unless (app-composing-sent-p app)
              (let ((buf (app-current-buffer app))
@@ -563,7 +724,8 @@
 
 (defun app-send-message (app text)
   "Send a message to the current buffer's XMPP connection."
-  (let ((buf (app-current-buffer app)))
+  (let ((text (emoji-expand text))
+        (buf (app-current-buffer app)))
     (when (and buf (not (eq (buffer-type buf) :system)))
       (let* ((jid (buffer-name buf))
              (conn (app-first-connection app))
