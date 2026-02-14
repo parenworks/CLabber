@@ -8,20 +8,36 @@ CLabber is a terminal UI (TUI) XMPP (Jabber) client written in Common Lisp.
 
 ** Features
 
+*** Protocol
 - *Native XMPP protocol implementation* - No external XMPP library dependencies
-- CLOS-first architecture for maintainability and extensibility
-- Event-driven design with thread-safe message passing
-- Widget-based UI with roster, buffer bar, and split chat panes
-- Scalable buffer bar (shows only open conversations)
-- *Server bookmarks* - Auto-join MUCs from XEP-0048/XEP-0402 bookmarks
+- *OMEMO encryption* (XEP-0384) - End-to-end encrypted messaging
+- *Message carbons* (XEP-0280) - Sync messages across devices
+- *Message correction* (XEP-0308) - Edit sent messages
+- *Message history* (XEP-0313 MAM) - Fetches recent messages on join
+- *Message timestamps* (XEP-0203 Delayed Delivery)
+- *Typing notifications* (XEP-0085 Chat State Notifications)
+- *Server bookmarks* (XEP-0048/XEP-0402) - Auto-join MUCs
+- *HTTP File Upload* (XEP-0363) - Upload and share files via XMPP
 - MUC (Multi-User Chat) support with presence tracking
-- *Room participant list* - Shows members with presence colors
-- *Message history* - XEP-0313 MAM fetches recent messages on room join
-- *Message timestamps* - XEP-0203 Delayed Delivery support
-- IRC bridge support via Biboumi
+- IRC bridge support via Biboumi (clean nick display)
+
+*** UI & UX
+- Widget-based TUI with roster, buffer bar, and split chat panes
+- *Room participant list* with presence colors and keyboard navigation
+- *Emoji shortcode support* with interactive picker popup (type =:= to browse)
 - Theming system with colored nicks and customizable UI colors
 - Tokyo Night theme (default) with additional built-in themes
+- Scalable buffer bar (shows only open conversations)
+
+*** File Sharing & Pastebin
+- *=/upload <file>=* - Upload via XMPP HTTP Upload (XEP-0363)
+- *=/0x0 <file>=* - Upload any file to [[https://0x0.st][0x0.st]] and share the link
+- *=/paste=* - Upload clipboard contents to 0x0.st (supports Wayland and X11)
+
+*** Security
+- SASL PLAIN and SASL EXTERNAL (client certificates) authentication
 - Multiple password sources (pass, authinfo.gpg, systemd-creds)
+- OMEMO end-to-end encryption with automatic key management
 
 ** Dependencies
 
@@ -139,6 +155,31 @@ See =docs/example-theme.lisp= for examples.
 |-------+-------------------------------------|
 | C-u   | Clear line                          |
 | Bksp  | Delete character                    |
+| Tab   | Nick completion                     |
+| :     | Open emoji picker popup             |
+
+*** Emoji Picker (when active)
+| Key       | Action                          |
+|-----------+---------------------------------|
+| Up/Down   | Navigate matches                |
+| Tab/Enter | Insert selected emoji           |
+| Escape    | Dismiss picker                  |
+| Letters   | Filter by shortcode             |
+
+** Commands
+
+| Command              | Description                                        |
+|----------------------+----------------------------------------------------|
+| =/join <room>=       | Join a MUC room                                    |
+| =/part=              | Leave current MUC room                             |
+| =/add <jid>=         | Add a contact                                      |
+| =/msg <jid> [text]=  | Open DM (optionally send message)                  |
+| =/omemo=             | Toggle OMEMO encryption for current buffer         |
+| =/upload <file>=     | Upload file via XMPP HTTP Upload (XEP-0363)        |
+| =/0x0 <file>=        | Upload file to 0x0.st and share link               |
+| =/paste=             | Upload clipboard to 0x0.st and share link          |
+| =/quit=              | Quit CLabber                                       |
+| =/help=              | Show available commands                            |
 
 ** Architecture
 
@@ -229,25 +270,25 @@ clabber/
 - [X] Private messages in MUC (XEP-0045) - needs testing
 - [X] Typing notifications (XEP-0085) - needs testing
 
-*** M8: Contact & Bookmark Management
-- [ ] Add/remove contacts (roster management)
-- [ ] Add/remove MUC bookmarks
-- [ ] Subscription handling (presence authorization)
-- [ ] vCard display (XEP-0054)
+*** M8: Security & Encryption [Complete]
+- [X] SASL EXTERNAL (client certificates)
+- [X] OMEMO encryption (XEP-0384) with automatic key management
+- [X] Message carbons (XEP-0280) - Sync across devices
 
-*** M9: Security & Authentication
-- [ ] SCRAM-SHA-1 authentication
-- [ ] SASL EXTERNAL (client certificates)
-- [ ] OMEMO encryption (XEP-0384)
-- [ ] OTR encryption fallback
+*** M9: File Sharing & Communication [Complete]
+- [X] HTTP File Upload (XEP-0363) - =/upload= command
+- [X] 0x0.st integration - =/0x0= and =/paste= commands
+- [X] Message correction (XEP-0308)
+- [X] Emoji shortcode support with interactive picker popup
+- [X] IRC gateway nick stripping (clean display)
 
-*** M10: Advanced Features
-- [ ] File transfer (XEP-0363 HTTP Upload)
-- [ ] Message carbons (XEP-0280)
+*** M10: Future
+- [ ] SCRAM-SHA-256 authentication
 - [ ] Stream management (XEP-0198)
-- [ ] Server-side message archiving
 - [ ] Multi-account support
-- [ ] Offline message queue
+- [ ] vCard display (XEP-0054)
+- [ ] Add/remove MUC bookmarks
+- [ ] Inline image preview (sixel/kitty)
 
 ** License
 

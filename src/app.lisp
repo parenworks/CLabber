@@ -753,11 +753,97 @@
                       (buffer-add-message buf
                         (make-message :text (format nil "Upload request error: ~a" e)
                                       :level :error))))))))))
+      ((string= cmd "/0x0")
+       (if (not args)
+           (let ((buf (app-current-buffer app)))
+             (when buf
+               (buffer-add-message buf
+                 (make-message :text "Usage: /0x0 <filepath>" :level :system))))
+           (let ((file-path (string-trim " " args))
+                 (buf (app-current-buffer app)))
+             (if (not (probe-file file-path))
+                 (when buf
+                   (buffer-add-message buf
+                     (make-message :text (format nil "File not found: ~a" file-path) :level :error)))
+                 (when buf
+                   (buffer-add-message buf
+                     (make-message :text (format nil "Uploading to 0x0.st...") :level :system))
+                   (let ((buf-ref buf)
+                         (path (namestring (truename file-path))))
+                     (bt:make-thread
+                      (lambda ()
+                        (handler-case
+                            (let ((url (0x0-upload-file path)))
+                              (if url
+                                  (bt:with-lock-held ((app-event-lock app))
+                                    (push (list :0x0-complete :url url :buffer buf-ref)
+                                          (app-events app)))
+                                  (bt:with-lock-held ((app-event-lock app))
+                                    (push (list :0x0-error :message "No URL returned" :buffer buf-ref)
+                                          (app-events app)))))
+                          (error (e)
+                            (bt:with-lock-held ((app-event-lock app))
+                              (push (list :0x0-error :message (format nil "~a" e) :buffer buf-ref)
+                                    (app-events app))))))
+                      :name "0x0-upload")))))))
+      ((string= cmd "/paste")
+       (let ((buf (app-current-buffer app)))
+         (when buf
+           (buffer-add-message buf
+             (make-message :text "Pasting clipboard to 0x0.st..." :level :system))
+           (let ((buf-ref buf))
+             (bt:make-thread
+              (lambda ()
+                (handler-case
+                    (let* ((text (or
+                                   ;; Try wl-paste first (Wayland)
+                                   (ignore-errors
+                                     (with-output-to-string (s)
+                                       (let ((proc (sb-ext:run-program
+                                                    "wl-paste" '("--no-newline")
+                                                    :output s :error nil :search t)))
+                                         (unless (zerop (sb-ext:process-exit-code proc))
+                                           (error "wl-paste failed")))))
+                                   ;; Fall back to xclip (X11)
+                                   (ignore-errors
+                                     (with-output-to-string (s)
+                                       (let ((proc (sb-ext:run-program
+                                                    "xclip" '("-selection" "clipboard" "-o")
+                                                    :output s :error nil :search t)))
+                                         (unless (zerop (sb-ext:process-exit-code proc))
+                                           (error "xclip failed")))))
+                                   ;; Fall back to xsel
+                                   (ignore-errors
+                                     (with-output-to-string (s)
+                                       (let ((proc (sb-ext:run-program
+                                                    "xsel" '("--clipboard" "--output")
+                                                    :output s :error nil :search t)))
+                                         (unless (zerop (sb-ext:process-exit-code proc))
+                                           (error "xsel failed")))))
+                                   (error "No clipboard tool available (install wl-paste, xclip, or xsel)")))
+                           (text (string-trim '(#\Space #\Newline) text)))
+                      (if (zerop (length text))
+                          (bt:with-lock-held ((app-event-lock app))
+                            (push (list :0x0-error :message "Clipboard is empty" :buffer buf-ref)
+                                  (app-events app)))
+                          (let ((url (0x0-upload-text text "paste.txt")))
+                            (if url
+                                (bt:with-lock-held ((app-event-lock app))
+                                  (push (list :0x0-complete :url url :buffer buf-ref)
+                                        (app-events app)))
+                                (bt:with-lock-held ((app-event-lock app))
+                                  (push (list :0x0-error :message "No URL returned" :buffer buf-ref)
+                                        (app-events app)))))))
+                  (error (e)
+                    (bt:with-lock-held ((app-event-lock app))
+                      (push (list :0x0-error :message (format nil "~a" e) :buffer buf-ref)
+                            (app-events app))))))
+              :name "0x0-paste")))))
       ((string= cmd "/help")
        (let ((buf (app-current-buffer app)))
          (when buf
            (buffer-add-message buf
-             (make-message :text "Commands: /join <room> /part /add <jid> /msg <jid> [text] /omemo /upload <file> /quit /help"
+             (make-message :text "Commands: /join /part /add /msg /omemo /upload /0x0 /paste /quit /help"
                            :level :system))))))))
 
 (defun app-send-message (app text)
@@ -959,6 +1045,23 @@
                  (when buf
                    (buffer-add-message buf
                      (make-message :text (format nil "Upload failed: ~a" message)
+                                   :level :error)))))
+              (:0x0-complete
+               (let ((url (getf (rest evt) :url))
+                     (buf (getf (rest evt) :buffer)))
+                 (when (and url buf)
+                   (buffer-add-message buf
+                     (make-message :text (format nil "0x0.st: ~a" url) :level :system))
+                   ;; Send URL as message in current chat
+                   (let ((conn (app-first-connection app)))
+                     (when (and conn (not (eq (buffer-type buf) :system)))
+                       (app-send-message app url))))))
+              (:0x0-error
+               (let ((message (getf (rest evt) :message))
+                     (buf (getf (rest evt) :buffer)))
+                 (when buf
+                   (buffer-add-message buf
+                     (make-message :text (format nil "0x0.st error: ~a" message)
                                    :level :error)))))))
         (error (e)
           (debug-log "Event processing error: ~a" e))))))

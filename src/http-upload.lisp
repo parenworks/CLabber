@@ -195,3 +195,93 @@
       ((string= ext "tar") "application/x-tar")
       ((string= ext "gz") "application/gzip")
       (t "application/octet-stream"))))
+
+;;; ============================================================
+;;; 0x0.st Pastebin Integration
+;;; ============================================================
+
+(defun 0x0-upload-file (file-path)
+  "Upload FILE-PATH to 0x0.st. Returns the URL string on success."
+  (let* ((boundary (format nil "----CLabber~A" (random 1000000)))
+         (filename (file-namestring file-path))
+         (content-type (guess-content-type filename))
+         (file-bytes (with-open-file (f file-path :element-type '(unsigned-byte 8))
+                       (let ((buf (make-array (file-length f) :element-type '(unsigned-byte 8))))
+                         (read-sequence buf f)
+                         buf)))
+         (crlf (coerce (list #\Return #\Linefeed) 'string))
+         ;; Build multipart body
+         (body-prefix (babel:string-to-octets
+                       (with-output-to-string (s)
+                         (format s "--~A" boundary) (write-string crlf s)
+                         (format s "Content-Disposition: form-data; name=\"file\"; filename=\"~A\"" filename) (write-string crlf s)
+                         (format s "Content-Type: ~A" content-type) (write-string crlf s)
+                         (write-string crlf s))
+                       :encoding :utf-8))
+         (body-suffix (babel:string-to-octets
+                       (with-output-to-string (s)
+                         (write-string crlf s)
+                         (format s "--~A--" boundary) (write-string crlf s))
+                       :encoding :utf-8))
+         (body-len (+ (length body-prefix) (length file-bytes) (length body-suffix))))
+    (0x0-http-post boundary body-prefix file-bytes body-suffix body-len)))
+
+(defun 0x0-upload-text (text &optional (filename "paste.txt"))
+  "Upload TEXT string to 0x0.st as a text file. Returns the URL string."
+  (let* ((boundary (format nil "----CLabber~A" (random 1000000)))
+         (crlf (coerce (list #\Return #\Linefeed) 'string))
+         (text-bytes (babel:string-to-octets text :encoding :utf-8))
+         (body-prefix (babel:string-to-octets
+                       (with-output-to-string (s)
+                         (format s "--~A" boundary) (write-string crlf s)
+                         (format s "Content-Disposition: form-data; name=\"file\"; filename=\"~A\"" filename) (write-string crlf s)
+                         (format s "Content-Type: text/plain; charset=utf-8") (write-string crlf s)
+                         (write-string crlf s))
+                       :encoding :utf-8))
+         (body-suffix (babel:string-to-octets
+                       (with-output-to-string (s)
+                         (write-string crlf s)
+                         (format s "--~A--" boundary) (write-string crlf s))
+                       :encoding :utf-8))
+         (body-len (+ (length body-prefix) (length text-bytes) (length body-suffix))))
+    (0x0-http-post boundary body-prefix text-bytes body-suffix body-len)))
+
+(defun 0x0-http-post (boundary prefix file-bytes suffix body-len)
+  "POST multipart form data to 0x0.st. Returns response body (URL)."
+  (let* ((host "0x0.st")
+         (port 443)
+         (socket (usocket:socket-connect host port :element-type '(unsigned-byte 8)))
+         (raw-stream (usocket:socket-stream socket))
+         (stream (cl+ssl:make-ssl-client-stream raw-stream
+                   :hostname host
+                   :external-format '(:utf-8 :eol-style :crlf))))
+    (unwind-protect
+        (progn
+          (let* ((crlf (coerce (list #\Return #\Linefeed) 'string))
+                 (header (with-output-to-string (s)
+                           (format s "POST / HTTP/1.1") (write-string crlf s)
+                           (format s "Host: ~A" host) (write-string crlf s)
+                           (format s "User-Agent: CLabber/2.0") (write-string crlf s)
+                           (format s "Content-Type: multipart/form-data; boundary=~A" boundary) (write-string crlf s)
+                           (format s "Content-Length: ~D" body-len) (write-string crlf s)
+                           (format s "Connection: close") (write-string crlf s)
+                           (write-string crlf s)))
+                 (header-bytes (babel:string-to-octets header :encoding :utf-8)))
+            (write-sequence header-bytes stream)
+            (write-sequence prefix stream)
+            (write-sequence file-bytes stream)
+            (write-sequence suffix stream)
+            (force-output stream)
+            ;; Read response
+            (let ((status-line (read-http-line stream))
+                  (url nil))
+              (debug-log "0x0.st response: ~a" status-line)
+              ;; Skip headers until blank line
+              (loop for line = (read-http-line stream)
+                    while (> (length line) 0))
+              ;; Read body (the URL)
+              (setf url (read-http-line stream))
+              (when (and url (> (length url) 0))
+                (string-trim '(#\Space #\Return #\Linefeed) url)))))
+      (ignore-errors (close stream))
+      (ignore-errors (usocket:socket-close socket)))))
