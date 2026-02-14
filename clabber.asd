@@ -1,65 +1,41 @@
 ;;;; clabber.asd - ASDF system definition for CLabber XMPP client
 
 (asdf:defsystem #:clabber
-  :description "A Common Lisp TUI XMPP (Jabber) client"
+  :description "CLabber - XMPP Chat Client with OMEMO"
   :author "Glenn Thompson"
   :license "MIT"
-  :version "0.1.0"
-  :depends-on (#:usocket
+  :version "2.0.0"
+  :depends-on (#:alexandria
+               #:cl-ppcre
+               #:bordeaux-threads
+               #:usocket
                #:cl+ssl
-               #:cxml
-               #:cl-base64
                #:ironclad
                #:babel
-               #:croatoan
-               #:bordeaux-threads
-               #:alexandria
-               #:local-time
-               #:str)
+               #:cl-base64
+               #:cffi)
   :serial t
   :components
   ((:module "src"
     :components
-    ((:file "package")
+    ((:file "packages")
+     (:file "ansi")
+     (:file "terminal")
+     (:file "theme")
+     (:file "model")
      (:file "config")
-     (:module "core"
-      :components
-      ((:file "classes")
-       (:file "queue")
-       (:file "events")
-       (:file "commands")
-       (:file "dispatch")
-       (:file "log")))
-     (:module "crypto"
-      :components
-      ((:file "omemo")))
+     (:file "widgets")
+     (:file "layout")
      (:module "xmpp"
       :components
-      ((:module "protocol"
-        :components
-        ((:file "xml")
-         (:file "stream")
-         (:file "sasl")
-         (:file "stanza")))
-       (:file "connection")
-       (:file "engine")
-       (:file "handlers")
-       (:file "reconnect")))
-     (:module "ui"
+      ((:file "stanza")
+       (:file "connection")))
+     (:module "crypto"
       :components
-      ((:file "classes")
-       (:file "theme")
-       (:file "layout")
-       (:file "keymap")
-       (:module "widgets"
-        :components
-        ((:file "roster")
-         (:file "bufferbar")
-         (:file "chat")
-         (:file "status")
-         (:file "input")
-         (:file "participants")))
-       (:file "tui")))
-     (:module "app"
-      :components
-      ((:file "main")))))))
+      ((:file "signal-ffi")
+       (:file "omemo")))
+     (:file "app")
+     (:file "main"))))
+  :build-operation "program-op"
+  :build-pathname "clabber"
+  :entry-point "clabber:main")
