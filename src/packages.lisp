@@ -243,6 +243,7 @@
            #:buffer-bar
            #:buffer-bar-buffers
            #:buffer-bar-active-index
+           #:buffer-bar-rows-needed
            ;; Splash
            #:splash-screen
            #:render-splash

@@ -80,19 +80,33 @@
   (vector-push-extend buffer (app-buffers app))
   buffer)
 
+(defun app-ordered-buffers (app)
+  "Return buffers in display order: system, DMs, MUCs."
+  (append
+   (loop for i from 0 below (fill-pointer (app-buffers app))
+         for b = (aref (app-buffers app) i)
+         when (eq (buffer-type b) :system) collect b)
+   (app-dm-buffers app)
+   (app-muc-buffers app)))
+
 (defun app-switch-buffer (app direction)
-  "Switch to next/previous buffer. DIRECTION is :next or :prev."
-  (let ((count (fill-pointer (app-buffers app)))
-        (idx (app-active-buffer app)))
-    (when (> count 0)
-      (setf (app-active-buffer app)
-            (mod (+ idx (if (eq direction :next) 1 -1)) count)))))
+  "Switch to next/previous buffer in display order. DIRECTION is :next or :prev."
+  (let* ((ordered (app-ordered-buffers app))
+         (count (length ordered))
+         (cur (app-current-buffer app))
+         (cur-idx (or (position cur ordered) 0))
+         (new-idx (mod (+ cur-idx (if (eq direction :next) 1 -1)) count))
+         (new-buf (nth new-idx ordered)))
+    (when new-buf
+      (app-switch-to-buffer app new-buf))))
 
 (defun app-switch-to-buffer (app buf)
   "Switch active buffer to BUF."
   (loop for i from 0 below (fill-pointer (app-buffers app))
         when (eq (aref (app-buffers app) i) buf)
-        do (setf (app-active-buffer app) i)
+        do (setf (app-active-buffer app) i
+                 (buffer-unread-count buf) 0
+                 (buffer-mention-p buf) nil)
            (return)))
 
 (defun app-dm-buffers (app)
@@ -126,6 +140,10 @@
   "Render the full UI."
   (let ((ly (app-layout app))
         (buf (app-current-buffer app)))
+    ;; Active buffer is always "read"
+    (when buf
+      (setf (buffer-unread-count buf) 0
+            (buffer-mention-p buf) nil))
     ;; Update roster panel
     (when (layout-roster ly)
       (let ((dms (app-dm-buffers app))
@@ -171,12 +189,13 @@
                 (or typing-text "")
                 correct-text
                 omemo-text)))) ;; closes concatenate, setf, let*, when
-    ;; Update buffer bar
+    ;; Update buffer bar (ordered: system, DMs, MUCs to match roster)
     (when (layout-buffer-bar ly)
-      (setf (buffer-bar-buffers (layout-buffer-bar ly))
-            (coerce (app-buffers app) 'list))
-      (setf (buffer-bar-active-index (layout-buffer-bar ly))
-            (app-active-buffer app)))
+      (let* ((ordered (app-ordered-buffers app))
+             (active-buf (app-current-buffer app))
+             (bar-idx (or (position active-buf ordered) 0)))
+        (setf (buffer-bar-buffers (layout-buffer-bar ly)) ordered)
+        (setf (buffer-bar-active-index (layout-buffer-bar ly)) bar-idx)))
     ;; Render all
     (layout-render-all ly)))
 

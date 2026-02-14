@@ -424,20 +424,38 @@
    (active-index :initarg :active :accessor buffer-bar-active-index :initform 0))
   (:documentation "Buffer bar at bottom of screen"))
 
+(defun buffer-bar-rows-needed (panel)
+  "Calculate how many rows the buffer bar needs."
+  (let ((w (panel-width panel))
+        (col 0)
+        (rows 1))
+    (dolist (buf (buffer-bar-buffers panel))
+      (let* ((name (or (clabber.model:buffer-display-name buf)
+                       (clabber.model:buffer-name buf)))
+             (display-len (min (length name) 12))
+             (entry-w (+ 1 display-len 1)))
+        (when (> (+ col entry-w) w)
+          (setf col 0)
+          (incf rows))
+        (incf col entry-w)))
+    rows))
+
 (defmethod panel-render ((panel buffer-bar))
   (let ((x (panel-x panel))
         (y (panel-y panel))
         (w (panel-width panel))
+        (h (panel-height panel))
         (theme (current-theme)))
-    (cursor-to y x)
-    ;; Full-width background
-    (emit-bg (theme-border-inactive theme) *terminal-io*)
-    (princ (make-string w :initial-element #\Space) *terminal-io*)
-    (cursor-to y x)
-    (let ((col x))
+    ;; Full-width background for all rows
+    (dotimes (row h)
+      (cursor-to (+ y row) x)
+      (emit-bg (theme-border-inactive theme) *terminal-io*)
+      (princ (make-string w :initial-element #\Space) *terminal-io*))
+    (let ((col 0)
+          (row 0))
       (loop for buf in (buffer-bar-buffers panel)
             for idx from 0
-            while (< col (+ x w -2))
+            while (< row h)
             do (let* ((name (or (clabber.model:buffer-display-name buf)
                                 (clabber.model:buffer-name buf)))
                       (active-p (= idx (buffer-bar-active-index panel)))
@@ -445,27 +463,33 @@
                       (has-mention (clabber.model:buffer-mention-p buf))
                       (display-name (if (> (length name) 12)
                                         (subseq name 0 12)
-                                        name)))
-                 (cursor-to y col)
-                 (emit-bg (theme-border-inactive theme) *terminal-io*)
-                 ;; Unread indicator
-                 (cond
-                   (has-mention
-                    (emit-fg (theme-mention-indicator theme) *terminal-io*)
-                    (princ "●" *terminal-io*))
-                   (has-unread
-                    (emit-fg (theme-unread-indicator theme) *terminal-io*)
-                    (princ "●" *terminal-io*))
-                   (t (princ " " *terminal-io*)))
-                 ;; Buffer name
-                 (if active-p
-                     (progn
-                       (emit-fg (theme-border-active theme) *terminal-io*)
-                       (bold))
-                     (emit-fg (theme-fg theme) *terminal-io*))
-                 (princ display-name *terminal-io*)
-                 (reset)
-                 (incf col (+ 1 (length display-name) 1)))))
+                                        name))
+                      (entry-w (+ 1 (length display-name) 1)))
+                 ;; Wrap to next row if this entry won't fit
+                 (when (and (> col 0) (> (+ col entry-w) w))
+                   (setf col 0)
+                   (incf row))
+                 (when (< row h)
+                   (cursor-to (+ y row) (+ x col))
+                   (emit-bg (theme-border-inactive theme) *terminal-io*)
+                   ;; Unread indicator
+                   (cond
+                     (has-mention
+                      (emit-fg (theme-mention-indicator theme) *terminal-io*)
+                      (princ "*" *terminal-io*))
+                     (has-unread
+                      (emit-fg (theme-unread-indicator theme) *terminal-io*)
+                      (princ "*" *terminal-io*))
+                     (t (princ " " *terminal-io*)))
+                   ;; Buffer name
+                   (if active-p
+                       (progn
+                         (emit-fg (theme-border-active theme) *terminal-io*)
+                         (bold))
+                       (emit-fg (theme-fg theme) *terminal-io*))
+                   (princ display-name *terminal-io*)
+                   (reset)
+                   (incf col entry-w)))))
     (reset)))
 
 ;;; Splash screen - shown during startup

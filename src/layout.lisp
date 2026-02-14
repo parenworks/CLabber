@@ -35,7 +35,7 @@
          (input-y 1)
          (status-y 2)
          (chat-y 3)
-         (bufbar-h 1)
+         (bufbar-h 2)
          (chat-h (- height 2 bufbar-h))  ; subtract input + status + bufbar
          (split (layout-split-mode layout)))
     ;; Input bar at top (row 1), spans chat + participants width
@@ -59,11 +59,11 @@
             (make-instance 'participants-panel
                            :x (+ chat-x chat-area-w) :y chat-y
                            :width participants-w :height chat-h))
-      ;; Buffer bar at bottom
+      ;; Buffer bar at bottom (multi-row)
       (setf (layout-buffer-bar layout)
             (make-instance 'buffer-bar
-                           :x chat-x :y height
-                           :width chat-w :height 1))
+                           :x chat-x :y (- height bufbar-h -1)
+                           :width chat-w :height bufbar-h))
       ;; Chat panel(s) based on split mode
       (cond
         ;; Horizontal split: two panes side by side
