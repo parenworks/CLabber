@@ -64,6 +64,32 @@
 
 ;;; Chat panel - displays messages
 
+(defun word-wrap (text width)
+  "Split TEXT into lines of at most WIDTH characters, breaking at word boundaries.
+   Returns a list of strings."
+  (if (<= (length text) width)
+      (list text)
+      (let ((lines nil)
+            (pos 0)
+            (len (length text)))
+        (loop while (< pos len)
+              do (let ((end (min (+ pos width) len)))
+                   (if (>= end len)
+                       ;; Last chunk fits
+                       (progn (push (subseq text pos) lines)
+                              (setf pos len))
+                       ;; Find last space within the line
+                       (let ((break-pos (position #\Space text :from-end t
+                                                  :start pos :end end)))
+                         (if (and break-pos (> break-pos pos))
+                             ;; Break at the space
+                             (progn (push (subseq text pos break-pos) lines)
+                                    (setf pos (1+ break-pos)))
+                             ;; No space found, hard break
+                             (progn (push (subseq text pos end) lines)
+                                    (setf pos end)))))))
+        (nreverse lines))))
+
 (defclass chat-panel (panel)
   ((buffer :initarg :buffer :accessor chat-panel-buffer :initform nil))
   (:documentation "Panel displaying chat messages"))
@@ -122,9 +148,8 @@
                         (lvl-color (theme-level-color theme level))
                         (prefix-len (+ 8 (if nick (+ (length nick) 2) 0)))
                         (text-width (max 1 (- content-w prefix-len)))
-                        ;; Calculate how many rows this message needs
-                        (text-len (length text))
-                        (num-lines (max 1 (ceiling text-len text-width))))
+                        ;; Word-wrap the text
+                        (wrapped-lines (word-wrap text text-width)))
                    ;; First line: timestamp + nick + start of text
                    (cursor-to row (+ x 1))
                    ;; Timestamp
@@ -149,31 +174,27 @@
                          (princ " (edited)" *terminal-io*)
                          (reset))
                        (princ ": " *terminal-io*)))
-                   ;; Message text with wrapping
+                   ;; Message text with word wrapping
                    (when lvl-color (emit-fg lvl-color *terminal-io*))
                    (when (clabber.model:message-highlight-p msg)
                      (emit-fg (theme-mention-indicator theme) *terminal-io*)
                      (bold))
                    ;; First line of text
-                   (let ((first-chunk (subseq text 0 (min text-len text-width))))
-                     (princ first-chunk *terminal-io*))
+                   (princ (first wrapped-lines) *terminal-io*)
                    (reset)
                    (incf row)
                    ;; Continuation lines (indented under first letter of text)
-                   (loop for line-idx from 1 below num-lines
-                         while (< row (+ y h -1))
-                         for start = (* line-idx text-width)
-                         for end = (min text-len (* (1+ line-idx) text-width))
-                         do (cursor-to row (+ x 1))
-                            ;; Indent with spaces to align under message text
-                            (dotimes (j prefix-len) (princ #\Space *terminal-io*))
-                            (when lvl-color (emit-fg lvl-color *terminal-io*))
-                            (when (clabber.model:message-highlight-p msg)
-                              (emit-fg (theme-mention-indicator theme) *terminal-io*)
-                              (bold))
-                            (princ (subseq text start end) *terminal-io*)
-                            (reset)
-                            (incf row))))
+                   (dolist (line (rest wrapped-lines))
+                     (when (< row (+ y h -1))
+                       (cursor-to row (+ x 1))
+                       (dotimes (j prefix-len) (princ #\Space *terminal-io*))
+                       (when lvl-color (emit-fg lvl-color *terminal-io*))
+                       (when (clabber.model:message-highlight-p msg)
+                         (emit-fg (theme-mention-indicator theme) *terminal-io*)
+                         (bold))
+                       (princ line *terminal-io*)
+                       (reset)
+                       (incf row)))))
         ;; OMEMO indicator in top-right corner
         (when (clabber.model:buffer-omemo-p buf)
           (cursor-to y (- (+ x w) 4))
@@ -217,20 +238,38 @@
                           (clabber.model:buffer-name buf))))
             (when selected-p (inverse))
             ;; Unread indicator
-            (cond
-              (has-mention
-               (emit-fg (theme-mention-indicator theme) *terminal-io*)
-               (princ "● " *terminal-io*))
-              (has-unread
-               (emit-fg (theme-unread-indicator theme) *terminal-io*)
-               (princ "● " *terminal-io*))
-              (t (princ "  " *terminal-io*)))
-            ;; Name (truncate)
-            (let ((max-name (- content-w 2)))
-              (princ (if (> (length name) max-name)
-                         (subseq name 0 max-name)
-                         name)
-                     *terminal-io*))
+            (let* ((unread (clabber.model:buffer-unread-count buf))
+                   (count-str (if (> unread 0)
+                                  (format nil "(~d)" unread)
+                                  ""))
+                   (count-len (length count-str))
+                   (avail (- content-w 2 count-len))
+                   (max-name (max 1 avail)))
+              (cond
+                (has-mention
+                 (emit-fg (theme-mention-indicator theme) *terminal-io*)
+                 (princ "● " *terminal-io*))
+                (has-unread
+                 (emit-fg (theme-unread-indicator theme) *terminal-io*)
+                 (princ "● " *terminal-io*))
+                (t (princ "  " *terminal-io*)))
+              ;; Name (truncate to leave room for count)
+              (let ((display-name (if (> (length name) max-name)
+                                      (subseq name 0 max-name)
+                                      name)))
+                (if (or has-unread has-mention)
+                    (emit-fg (theme-fg theme) *terminal-io*)
+                    (emit-fg (theme-fg theme) *terminal-io*))
+                (princ display-name *terminal-io*)
+                ;; Right-align unread count
+                (when (> unread 0)
+                  (let ((pad (- content-w 2 (length display-name) count-len)))
+                    (when (> pad 0)
+                      (princ (make-string pad :initial-element #\Space) *terminal-io*))
+                    (cond
+                      (has-mention (emit-fg (theme-mention-indicator theme) *terminal-io*))
+                      (t (emit-fg (theme-unread-indicator theme) *terminal-io*)))
+                    (princ count-str *terminal-io*)))))
             (reset))
           (incf row)
           (incf idx)))
@@ -254,19 +293,34 @@
                 (name (or (clabber.model:buffer-display-name buf)
                           (clabber.model:buffer-name buf))))
             (when selected-p (inverse))
-            (cond
-              (has-mention
-               (emit-fg (theme-mention-indicator theme) *terminal-io*)
-               (princ "● " *terminal-io*))
-              (has-unread
-               (emit-fg (theme-unread-indicator theme) *terminal-io*)
-               (princ "● " *terminal-io*))
-              (t (princ "  " *terminal-io*)))
-            (let ((max-name (- content-w 2)))
-              (princ (if (> (length name) max-name)
-                         (subseq name 0 max-name)
-                         name)
-                     *terminal-io*))
+            (let* ((unread (clabber.model:buffer-unread-count buf))
+                   (count-str (if (> unread 0)
+                                  (format nil "(~d)" unread)
+                                  ""))
+                   (count-len (length count-str))
+                   (avail (- content-w 2 count-len))
+                   (max-name (max 1 avail)))
+              (cond
+                (has-mention
+                 (emit-fg (theme-mention-indicator theme) *terminal-io*)
+                 (princ "● " *terminal-io*))
+                (has-unread
+                 (emit-fg (theme-unread-indicator theme) *terminal-io*)
+                 (princ "● " *terminal-io*))
+                (t (princ "  " *terminal-io*)))
+              (let ((display-name (if (> (length name) max-name)
+                                      (subseq name 0 max-name)
+                                      name)))
+                (emit-fg (theme-fg theme) *terminal-io*)
+                (princ display-name *terminal-io*)
+                (when (> unread 0)
+                  (let ((pad (- content-w 2 (length display-name) count-len)))
+                    (when (> pad 0)
+                      (princ (make-string pad :initial-element #\Space) *terminal-io*))
+                    (cond
+                      (has-mention (emit-fg (theme-mention-indicator theme) *terminal-io*))
+                      (t (emit-fg (theme-unread-indicator theme) *terminal-io*)))
+                    (princ count-str *terminal-io*)))))
             (reset))
           (incf row)
           (incf idx))))))

@@ -4,7 +4,7 @@
 ;;; Computes panel positions and dimensions based on terminal size
 
 (defclass layout ()
-  ((roster-width :initarg :roster-width :accessor layout-roster-width :initform 28)
+  ((roster-width :initarg :roster-width :accessor layout-roster-width :initform 32)
    (participants-width :initarg :participants-width :accessor layout-participants-width :initform 22)
    (split-mode :initarg :split-mode :accessor layout-split-mode :initform nil
                :documentation "Split mode: nil (single), :horizontal, :vertical")
@@ -18,7 +18,7 @@
    (buffer-bar :accessor layout-buffer-bar :initform nil))
   (:documentation "Screen layout manager"))
 
-(defun make-layout (&key (roster-width 28) (participants-width 22) split-mode)
+(defun make-layout (&key (roster-width 32) (participants-width 22) split-mode)
   (make-instance 'layout
                  :roster-width roster-width
                  :participants-width participants-width
