@@ -40,7 +40,10 @@
                      :documentation "Whether we've sent <composing> for current input")
    (typing-indicators :initform (make-hash-table :test 'equal)
                       :accessor app-typing-indicators
-                      :documentation "JID -> (nick . timestamp) of who is typing"))
+                      :documentation "JID -> (nick . timestamp) of who is typing")
+   ;; Focus mode for panel navigation
+   (focus-mode :initform :input :accessor app-focus-mode
+               :documentation "Current focus: :input or :participants"))
   (:documentation "Main CLabber application state"))
 
 (defun make-app ()
@@ -161,7 +164,7 @@
                               ;; Expire after 10 seconds
                               (< (- (get-universal-time) (cdr indicator)) 10))
                      (format nil "~a is typing... " (car indicator))))))
-             (omemo-text (if (and buf (buffer-omemo-p buf)) "OMEMO " "")))
+             (omemo-text (if (and buf (buffer-omemo-p buf)) "🔒 OMEMO " "")))
         (setf (status-bar-right (layout-status ly))
               (if typing-text
                   (concatenate 'string typing-text omemo-text)
@@ -179,8 +182,69 @@
 ;;; Input handling
 ;;; ============================================================
 
+(defun app-handle-participants-input (app key)
+  "Handle input when WHO panel is focused. Returns NIL to quit, T to continue."
+  (let* ((ly (app-layout app))
+         (panel (layout-participants ly)))
+    (when panel
+      (let ((count (length (participants-list panel)))
+            (sel (participants-selected-index panel)))
+        (cond
+          ;; Escape or Ctrl-O: return to input mode
+          ((or (eql (key-event-code key) +key-escape+)
+               (and (key-event-ctrl-p key) (eql (key-event-char key) #\o)))
+           (setf (participants-selected-index panel) -1
+                 (app-focus-mode app) :input))
+          ;; Up arrow: move selection up
+          ((eql (key-event-code key) +key-up+)
+           (when (> count 0)
+             (setf (participants-selected-index panel)
+                   (if (<= sel 0) (1- count) (1- sel)))))
+          ;; Down arrow: move selection down
+          ((eql (key-event-code key) +key-down+)
+           (when (> count 0)
+             (setf (participants-selected-index panel)
+                   (if (>= sel (1- count)) 0 (1+ sel)))))
+          ;; Enter: open DM with selected participant
+          ((eql (key-event-code key) +key-enter+)
+           (when (and (>= sel 0) (< sel count))
+             (let* ((sorted (sort (copy-list (participants-list panel))
+                                  (lambda (a b)
+                                    (let ((ra (clabber.model:participant-role a))
+                                          (rb (clabber.model:participant-role b)))
+                                      (or (> (role-sort-key ra) (role-sort-key rb))
+                                          (and (= (role-sort-key ra) (role-sort-key rb))
+                                               (string< (clabber.model:participant-nick a)
+                                                        (clabber.model:participant-nick b))))))))
+                    (entry (nth sel sorted))
+                    (nick (clabber.model:participant-nick entry))
+                    (buf (app-current-buffer app)))
+               (when (and buf nick)
+                 ;; Build DM JID: for biboumi IRC, nick%server@gateway
+                 (let* ((muc-jid (buffer-name buf))
+                        (at-pos (position #\@ muc-jid))
+                        (pct-pos (position #\% muc-jid))
+                        (dm-jid (if (and at-pos pct-pos (< pct-pos at-pos))
+                                    ;; Biboumi MUC: #chan%irc.server@gateway
+                                    ;; PM JID: nick%irc.server@gateway
+                                    (format nil "~a~a" nick (subseq muc-jid pct-pos))
+                                    ;; Native XMPP MUC: use occupant JID
+                                    (format nil "~a/~a" muc-jid nick)))
+                        (dm-buf (app-find-or-create-buffer app dm-jid
+                                  :type :dm :display-name nick)))
+                   (app-switch-to-buffer app dm-buf)
+                   (setf (participants-selected-index panel) -1
+                         (app-focus-mode app) :input))))))
+          ;; Ctrl-Q: quit even from participants mode
+          ((and (key-event-ctrl-p key) (eql (key-event-char key) #\q))
+           (return-from app-handle-participants-input nil))))))
+  t)
+
 (defun app-handle-input (app key)
   "Handle a key event. Returns NIL to quit, T to continue."
+  ;; Dispatch to participants panel handler if focused
+  (when (eq (app-focus-mode app) :participants)
+    (return-from app-handle-input (app-handle-participants-input app key)))
   ;; Reset TAB completion state on any non-TAB key
   (unless (eql (key-event-code key) +key-tab+)
     (setf (app-tab-prefix app) nil
@@ -197,6 +261,17 @@
       ;; Ctrl-P: previous buffer
       ((and (key-event-ctrl-p key) (eql (key-event-char key) #\p))
        (app-switch-buffer app :prev) t)
+      ;; Ctrl-O: focus WHO panel for participant selection
+      ((and (key-event-ctrl-p key) (eql (key-event-char key) #\o))
+       (let* ((ly (app-layout app))
+              (panel (layout-participants ly))
+              (buf (app-current-buffer app)))
+         (when (and panel buf (eq (buffer-type buf) :muc)
+                    (participants-list panel)
+                    (> (length (participants-list panel)) 0))
+           (setf (participants-selected-index panel) 0
+                 (app-focus-mode app) :participants)))
+       t)
       ;; Ctrl-W: cycle split mode
       ((and (key-event-ctrl-p key) (eql (key-event-char key) #\w))
        (let ((current (layout-split-mode (app-layout app))))
@@ -632,20 +707,31 @@
                (is-encrypted (not (null decrypted-body))))
            (when (and from display-body (> (length display-body) 0))
              (let* ((is-muc (and msg-type (string= msg-type "groupchat")))
-                    (buf-name (bare-jid from))
-                    (nick (if is-muc (jid-resource from) (bare-jid from)))
-                    (buf (app-find-or-create-buffer app buf-name
-                           :type (if is-muc :muc :dm)
-                           :display-name (when is-muc (strip-muc-name buf-name)))))
-               ;; Mark buffer as OMEMO-capable if we decrypted successfully
-               (when is-encrypted
-                 (setf (buffer-omemo-p buf) t))
-               (buffer-add-message buf
-                 (make-message :text display-body :nick nick
-                               :timestamp (if delay
-                                              (or (ignore-errors (parse-xmpp-timestamp delay))
-                                                  (get-universal-time))
-                                              (get-universal-time))))))
+                    (conn (app-first-connection app))
+                    (our-jid (when conn (bare-jid (conn-bound-jid conn))))
+                    (from-bare (bare-jid from))
+                    (to-jid (stanza-to stanza))
+                    (is-own-msg (and our-jid (string= from-bare our-jid) (not is-muc)))
+                    (buf-name (if is-own-msg
+                                  (when to-jid (bare-jid to-jid))
+                                  from-bare))
+                    (nick (cond (is-muc (jid-resource from))
+                                (is-own-msg (or our-jid "me"))
+                                (t from-bare)))
+                    (buf (when buf-name
+                           (app-find-or-create-buffer app buf-name
+                             :type (if is-muc :muc :dm)
+                             :display-name (when is-muc (strip-muc-name buf-name))))))
+               (when buf
+                 ;; Mark buffer as OMEMO-capable if we decrypted successfully
+                 (when is-encrypted
+                   (setf (buffer-omemo-p buf) t))
+                 (buffer-add-message buf
+                   (make-message :text display-body :nick nick
+                                 :timestamp (if delay
+                                                (or (ignore-errors (parse-xmpp-timestamp delay))
+                                                    (get-universal-time))
+                                                (get-universal-time)))))))
            ;; If OMEMO message but we couldn't decrypt, show indicator
            ;; (but not for key-transport messages which have no payload)
            (when (and omemo-el (not decrypted-body) from
@@ -919,6 +1005,13 @@
                                                 name)
                               :type type)))
         (app-add-buffer app buf)
+        ;; Query MAM for DM history on new buffer creation
+        (when (eq type :dm)
+          (let ((conn (app-first-connection app)))
+            (when conn
+              (handler-case
+                  (xmpp-query-mam conn nil :with name :max 50)
+                (error (e) (debug-log "DM MAM query error for ~a: ~a" name e))))))
         buf)))
 
 (defun parse-xmpp-timestamp (stamp)

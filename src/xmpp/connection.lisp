@@ -325,7 +325,8 @@
 ;;; MAM (XEP-0313)
 ;;; ============================================================
 
-(defun xmpp-query-mam (conn room-jid &key max)
+(defun xmpp-query-mam (conn jid &key max with)
+  "Query MAM archive. For MUCs, JID is the room. For DMs, JID is nil and WITH is the contact JID."
   (let* ((query-id (format nil "mam-~a" (random 100000)))
          (rsm-children (list (make-xml-element "before")))
          (rsm-children (if max
@@ -335,10 +336,23 @@
          (rsm (make-xml-element "set"
                                 :namespace "http://jabber.org/protocol/rsm"
                                 :children rsm-children))
+         ;; Build data form with 'with' filter for DM queries
+         (form-children
+           (when with
+             (list (make-xml-element "x"
+                     :namespace "jabber:x:data"
+                     :attributes '(("type" . "submit"))
+                     :children (list
+                       (make-xml-element "field"
+                         :attributes '(("var" . "FORM_TYPE") ("type" . "hidden"))
+                         :children (list (make-xml-element "value" :text +ns-mam+)))
+                       (make-xml-element "field"
+                         :attributes '(("var" . "with"))
+                         :children (list (make-xml-element "value" :text with))))))))
          (query (make-xml-element "query"
                                   :namespace +ns-mam+
                                   :attributes `(("queryid" . ,query-id))
-                                  :children (list rsm)))
-         (iq (make-iq-stanza "set" :to room-jid :query query :id query-id)))
+                                  :children (append form-children (list rsm))))
+         (iq (make-iq-stanza "set" :to jid :query query :id query-id)))
     (xmpp-send conn iq)
     query-id))

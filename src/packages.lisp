@@ -223,6 +223,8 @@
            ;; Participants panel
            #:participants-panel
            #:participants-list
+           #:participants-selected-index
+           #:role-sort-key
            ;; Input bar
            #:input-bar
            #:input-bar-text
