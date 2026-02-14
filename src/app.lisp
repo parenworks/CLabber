@@ -715,11 +715,49 @@
                        (xmpp-fetch-omemo-devicelist conn (buffer-name buf))
                      (error (e)
                        (debug-log "Fetch device list error: ~a" e))))))))))
+      ((string= cmd "/upload")
+       (if (not args)
+           (let ((buf (app-current-buffer app)))
+             (when buf
+               (buffer-add-message buf
+                 (make-message :text "Usage: /upload <filepath>" :level :system))))
+           (let ((file-path (string-trim " " args))
+                 (buf (app-current-buffer app))
+                 (conn (app-first-connection app)))
+             (cond
+               ((not (probe-file file-path))
+                (when buf
+                  (buffer-add-message buf
+                    (make-message :text (format nil "File not found: ~a" file-path) :level :error))))
+               ((not *upload-service-jid*)
+                (when buf
+                  (buffer-add-message buf
+                    (make-message :text "No HTTP Upload service discovered. Server may not support XEP-0363."
+                                  :level :error))))
+               ((and buf conn)
+                (let* ((truename (truename file-path))
+                       (filename (file-namestring truename))
+                       (size (with-open-file (f truename :element-type '(unsigned-byte 8))
+                               (file-length f)))
+                       (content-type (guess-content-type filename)))
+                  (setf *pending-upload*
+                        (list :file (namestring truename)
+                              :buffer buf
+                              :content-type content-type))
+                  (buffer-add-message buf
+                    (make-message :text (format nil "Uploading ~a (~d bytes)..." filename size)
+                                  :level :system))
+                  (handler-case
+                      (xmpp-request-upload-slot conn filename size content-type)
+                    (error (e)
+                      (buffer-add-message buf
+                        (make-message :text (format nil "Upload request error: ~a" e)
+                                      :level :error))))))))))
       ((string= cmd "/help")
        (let ((buf (app-current-buffer app)))
          (when buf
            (buffer-add-message buf
-             (make-message :text "Commands: /join <room> /part /add <jid> /msg <jid> [text] /omemo /quit /help"
+             (make-message :text "Commands: /join <room> /part /add <jid> /msg <jid> [text] /omemo /upload <file> /quit /help"
                            :level :system))))))))
 
 (defun app-send-message (app text)
@@ -883,7 +921,45 @@
                (let ((sys-buf (app-current-buffer app)))
                  (when sys-buf
                    (buffer-add-message sys-buf
-                     (make-message :text "Disconnected from server" :level :error)))))))
+                     (make-message :text "Disconnected from server" :level :error)))))
+              (:upload-complete
+               (let ((url (getf (rest evt) :url))
+                     (buf (getf (rest evt) :buffer))
+                     (conn (app-first-connection app)))
+                 (when (and url buf conn)
+                   ;; Send the download URL as a message with OOB element
+                   (let* ((jid (buffer-name buf))
+                          (msg-type (if (eq (buffer-type buf) :muc) "groupchat" "chat"))
+                          (oob (make-xml-element "x"
+                                 :namespace clabber.xmpp::+ns-oob+
+                                 :children (list (make-xml-element "url" :text url))))
+                          (body-el (make-xml-element "body" :text url))
+                          (msg-el (make-xml-element "message"
+                                    :attributes `(("to" . ,jid)
+                                                  ("type" . ,msg-type)
+                                                  ("id" . ,(generate-id)))
+                                    :children (list body-el oob))))
+                     (handler-case
+                         (xmpp-stream-send (conn-stream conn) msg-el)
+                       (error (e)
+                         (debug-log "Send upload URL error: ~a" e))))
+                   ;; Show locally for DMs
+                   (when (eq (buffer-type buf) :dm)
+                     (let ((nick (if conn
+                                     (let ((bound (conn-bound-jid conn)))
+                                       (if bound (parse-jid bound) "me"))
+                                     "me")))
+                       (buffer-add-message buf
+                         (make-message :text url :nick nick))))
+                   (buffer-add-message buf
+                     (make-message :text "File uploaded successfully" :level :system)))))
+              (:upload-error
+               (let ((message (getf (rest evt) :message))
+                     (buf (getf (rest evt) :buffer)))
+                 (when buf
+                   (buffer-add-message buf
+                     (make-message :text (format nil "Upload failed: ~a" message)
+                                   :level :error)))))))
         (error (e)
           (debug-log "Event processing error: ~a" e))))))
 
@@ -935,7 +1011,8 @@
                                   from-bare))
                     (nick (cond (is-muc (jid-resource from))
                                 (is-own-msg (or our-jid "me"))
-                                (t from-bare)))
+                                (t (let ((pct (position #\% from-bare)))
+                                     (if pct (subseq from-bare 0 pct) from-bare)))))
                     (buf (when buf-name
                            (app-find-or-create-buffer app buf-name
                              :type (if is-muc :muc :dm)
@@ -1181,22 +1258,21 @@
                (handler-case
                    (xmpp-publish-omemo-devicelist conn *omemo-device-id* nil)
                  (error (e) (debug-log "OMEMO: fallback publish error: ~a" e))))))
-         ;; Handle disco#info response - extract MUC features/modes
+         ;; Handle disco#info response - extract MUC features/modes + HTTP Upload
          (when (and (string= type- "result")
                     (string= (xml-name query) "query")
                     (string= (or (xml-namespace query) "") clabber.xmpp::+ns-disco-info+))
            (let ((from-jid (stanza-from stanza)))
              (when from-jid
+               ;; MUC mode flags
                (let ((buf (app-find-buffer app (bare-jid from-jid))))
                  (when (and buf (eq (buffer-type buf) :muc))
-                   ;; Collect feature vars for IRC channel modes
                    (let ((features nil))
                      (dolist (child (xml-children query))
                        (when (and (typep child 'xml-element)
                                   (string= (xml-name child) "feature"))
                          (let ((var (xml-attr child "var")))
                            (when var (push var features)))))
-                     ;; Map common MUC/IRC features to mode flags
                      (let ((modes ""))
                        (when (member "muc_noexternal" features :test #'string=)
                          (setf modes (concatenate 'string modes "n")))
@@ -1210,7 +1286,32 @@
                          (setf modes (concatenate 'string modes "s")))
                        (when (> (length modes) 0)
                          (setf (buffer-modes buf) (concatenate 'string "+" modes))
-                         (debug-log "Disco: ~a modes=+~a" (bare-jid from-jid) modes)))))))))
+                         (debug-log "Disco: ~a modes=+~a" (bare-jid from-jid) modes))))))
+               ;; Check if this component supports HTTP Upload
+               (dolist (child (xml-children query))
+                 (when (and (typep child 'xml-element)
+                            (string= (xml-name child) "feature")
+                            (string= (or (xml-attr child "var") "")
+                                     clabber.xmpp::+ns-http-upload+))
+                   (setf *upload-service-jid* from-jid)
+                   (debug-log "Discovered HTTP Upload service: ~a" from-jid))))))
+         ;; Handle disco#items response - discover server components
+         (when (and (string= type- "result")
+                    (string= (xml-name query) "query")
+                    (string= (or (xml-namespace query) "") clabber.xmpp::+ns-disco-items+))
+           (dolist (child (xml-children query))
+             (when (and (typep child 'xml-element)
+                        (string= (xml-name child) "item"))
+               (let ((item-jid (xml-attr child "jid")))
+                 (when item-jid
+                   (debug-log "Disco item: ~a" item-jid)
+                   (handler-case
+                       (xmpp-disco-info-for-upload conn item-jid)
+                     (error (e) (debug-log "Disco info error for ~a: ~a" item-jid e))))))))
+         ;; Handle HTTP Upload slot response (XEP-0363)
+         (when (and (string= type- "result")
+                    (string= (xml-name query) "slot"))
+           (handle-upload-slot-response app stanza))
          ;; Handle MAM results (messages wrapped in <result> inside <message>)
          )))
     (t nil)))
@@ -1518,7 +1619,17 @@
               (xmpp-send-presence conn)
               (xmpp-get-roster conn)
               (xmpp-get-bookmarks conn)
-              (handler-case (xmpp-enable-carbons conn) (error () nil)))
+              (handler-case (xmpp-enable-carbons conn) (error () nil))
+              ;; Discover server components for HTTP Upload (XEP-0363)
+              (let* ((jid (conn-bound-jid conn))
+                     (at (when jid (position #\@ jid)))
+                     (server (when at (subseq jid (1+ at))))
+                     (slash (when server (position #\/ server)))
+                     (domain (if slash (subseq server 0 slash) server)))
+                (when domain
+                  (handler-case
+                      (xmpp-disco-items conn domain)
+                    (error (e) (debug-log "Disco items error: ~a" e))))))
           (error () nil))
 
         ;; Step 4: Joining rooms (will happen async via bookmarks)

@@ -38,6 +38,7 @@
       ((:file "signal-ffi")
        (:file "omemo")))
      (:file "emoji")
+     (:file "http-upload")
      (:file "app")
      (:file "main"))))
   :build-operation "program-op"

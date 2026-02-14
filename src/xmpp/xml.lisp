@@ -26,6 +26,8 @@
 (defparameter +ns-chatstates+ "http://jabber.org/protocol/chatstates")
 (defparameter +ns-mam+ "urn:xmpp:mam:2")
 (defparameter +ns-forward+ "urn:xmpp:forward:0")
+(defparameter +ns-http-upload+ "urn:xmpp:http:upload:0")
+(defparameter +ns-oob+ "jabber:x:oob")
 
 ;;; ============================================================
 ;;; XML Element Class
