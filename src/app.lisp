@@ -34,7 +34,13 @@
    (tab-word-start :initform 0 :accessor app-tab-word-start
                    :documentation "Start position of the word being completed")
    (tab-after-pos :initform 0 :accessor app-tab-after-pos
-                  :documentation "Position after the last inserted completion"))
+                  :documentation "Position after the last inserted completion")
+   ;; Chat state notification tracking
+   (composing-sent-p :initform nil :accessor app-composing-sent-p
+                     :documentation "Whether we've sent <composing> for current input")
+   (typing-indicators :initform (make-hash-table :test 'equal)
+                      :accessor app-typing-indicators
+                      :documentation "JID -> (nick . timestamp) of who is typing"))
   (:documentation "Main CLabber application state"))
 
 (defun make-app ()
@@ -147,8 +153,19 @@
             (if buf
                 (format nil " ~A" (or (buffer-display-name buf) (buffer-name buf)))
                 " CLabber"))
-      (setf (status-bar-right (layout-status ly))
-            (format nil "~A " (if (and buf (buffer-omemo-p buf)) "OMEMO" ""))))
+      ;; Show typing indicator or OMEMO status on the right
+      (let* ((typing-text
+               (when buf
+                 (let ((indicator (gethash (buffer-name buf) (app-typing-indicators app))))
+                   (when (and indicator
+                              ;; Expire after 10 seconds
+                              (< (- (get-universal-time) (cdr indicator)) 10))
+                     (format nil "~a is typing... " (car indicator))))))
+             (omemo-text (if (and buf (buffer-omemo-p buf)) "OMEMO " "")))
+        (setf (status-bar-right (layout-status ly))
+              (if typing-text
+                  (concatenate 'string typing-text omemo-text)
+                  omemo-text))))
     ;; Update buffer bar
     (when (layout-buffer-bar ly)
       (setf (buffer-bar-buffers (layout-buffer-bar ly))
@@ -276,7 +293,15 @@
                  ;; Send message
                  (app-send-message app text))
              (setf (input-bar-text input) ""
-                   (input-bar-cursor-pos input) 0))))
+                   (input-bar-cursor-pos input) 0)
+             ;; Send <active> chat state after sending message
+             (setf (app-composing-sent-p app) nil)
+             (let ((buf (app-current-buffer app))
+                   (conn (app-first-connection app)))
+               (when (and buf conn (eq (buffer-type buf) :dm))
+                 (handler-case
+                     (xmpp-send-chat-state conn (buffer-name buf) "active")
+                   (error () nil)))))))
        t)
       ;; Backspace
       ((eql (key-event-code key) +key-backspace+)
@@ -309,7 +334,17 @@
                  (text (input-bar-text input)))
              (setf (input-bar-text input)
                    (concatenate 'string (subseq text 0 pos) (string ch) (subseq text pos)))
-             (incf (input-bar-cursor-pos input)))))
+             (incf (input-bar-cursor-pos input)))
+           ;; Send <composing> chat state on first keystroke
+           (unless (app-composing-sent-p app)
+             (let ((buf (app-current-buffer app))
+                   (conn (app-first-connection app)))
+               (when (and buf conn (eq (buffer-type buf) :dm))
+                 (handler-case
+                     (progn
+                       (xmpp-send-chat-state conn (buffer-name buf) "composing")
+                       (setf (app-composing-sent-p app) t))
+                   (error () nil)))))))
        t)
       ;; Unknown key - ignore
       (t t))))
@@ -568,6 +603,16 @@
             (msg-type (stanza-type stanza))
             (delay (message-delay stanza))
             (omemo-el (message-omemo-encrypted stanza)))
+       ;; Handle chat state notifications (XEP-0085)
+       (let ((chat-state (clabber.xmpp::message-chat-state stanza)))
+         (when (and from chat-state)
+           (let ((bare (bare-jid from)))
+             (cond
+               ((string= chat-state "composing")
+                (setf (gethash bare (app-typing-indicators app))
+                      (cons (or (jid-resource from) bare) (get-universal-time))))
+               (t
+                (remhash bare (app-typing-indicators app)))))))
        ;; Handle MUC subject/topic changes
        (when (and from msg-type (string= msg-type "groupchat"))
          (let ((subj (clabber.xmpp::message-subject stanza)))
