@@ -243,7 +243,7 @@
                                          (lambda (nick)
                                            (and (>= (length nick) (length partial))
                                                 (string-equal (subseq nick 0 (length partial)) partial)))
-                                         (copy-list (buffer-participants buf)))
+                                         (buffer-participant-nicks buf))
                                         #'string<)))
                      (when matches
                        (setf (app-tab-prefix app) partial
@@ -568,6 +568,15 @@
             (msg-type (stanza-type stanza))
             (delay (message-delay stanza))
             (omemo-el (message-omemo-encrypted stanza)))
+       ;; Handle MUC subject/topic changes
+       (when (and from msg-type (string= msg-type "groupchat"))
+         (let ((subj (clabber.xmpp::message-subject stanza)))
+           (when subj
+             (let* ((buf-name (bare-jid from))
+                    (buf (app-find-buffer app buf-name)))
+               (when (and buf (eq (buffer-type buf) :muc))
+                 (setf (buffer-topic buf) subj)
+                 (debug-log "MUC topic for ~a: ~a" buf-name subj))))))
        ;; Handle OMEMO device list PEP events
        (when (and (stanza-xml stanza)
                   (xml-child (stanza-xml stanza) "event"))
@@ -629,16 +638,26 @@
            (resource
             (let ((buf (app-find-buffer app bare)))
               (cond
-                ;; Known MUC buffer: update participants
+                ;; Known MUC buffer: update participants with role
                 ((and buf (eq (buffer-type buf) :muc))
-                 (let ((presence-str (or show
-                                         (if (and type- (string= type- "unavailable"))
-                                             "offline" "available"))))
-                   (if (string= presence-str "offline")
-                       (setf (buffer-participants buf)
-                             (remove resource (buffer-participants buf) :test #'string=))
-                       (unless (member resource (buffer-participants buf) :test #'string=)
-                         (push resource (buffer-participants buf))))))
+                 (if (and type- (string= type- "unavailable"))
+                     (buffer-remove-participant buf resource)
+                     ;; Parse affiliation/role from <x xmlns="...muc#user"><item>
+                     (let ((affiliation nil)
+                           (role nil))
+                       (when (stanza-xml stanza)
+                         (let ((x-el (find-if (lambda (c)
+                                                (and (typep c 'xml-element)
+                                                     (string= (xml-name c) "x")
+                                                     (search "muc#user" (or (xml-namespace c) ""))))
+                                              (xml-children (stanza-xml stanza)))))
+                           (when x-el
+                             (let ((item (xml-child x-el "item")))
+                               (when item
+                                 (setf affiliation (xml-attr item "affiliation"))
+                                 (setf role (xml-attr item "role")))))))
+                       (buffer-add-participant buf resource
+                         :role (affiliation-to-role affiliation role)))))
                 ;; Known DM buffer or no buffer: update contact presence
                 (t
                  (let ((contact (gethash bare (app-contacts app))))
@@ -703,7 +722,8 @@
                                  (app-find-or-create-buffer app jid
                                    :type :muc
                                    :display-name (or name (strip-muc-name jid)))
-                                 (xmpp-query-mam conn jid :max 50))
+                                 (xmpp-query-mam conn jid :max 50)
+                                 (xmpp-disco-info conn jid))
                              (error (e)
                                (debug-log "Roster MUC join error for ~a: ~a" jid e)))
                            (app-find-or-create-buffer app jid
@@ -740,7 +760,8 @@
                            (app-find-or-create-buffer app jid
                              :type :muc
                              :display-name (strip-muc-name jid))
-                           (xmpp-query-mam conn jid :max 50))
+                           (xmpp-query-mam conn jid :max 50)
+                           (xmpp-disco-info conn jid))
                        (error (e)
                          (debug-log "MUC join error for ~a: ~a" jid e)))))))))
          ;; Handle PubSub/OMEMO device list and bundle responses
@@ -803,6 +824,36 @@
                (handler-case
                    (xmpp-publish-omemo-devicelist conn *omemo-device-id* nil)
                  (error (e) (debug-log "OMEMO: fallback publish error: ~a" e))))))
+         ;; Handle disco#info response - extract MUC features/modes
+         (when (and (string= type- "result")
+                    (string= (xml-name query) "query")
+                    (string= (or (xml-namespace query) "") clabber.xmpp::+ns-disco-info+))
+           (let ((from-jid (stanza-from stanza)))
+             (when from-jid
+               (let ((buf (app-find-buffer app (bare-jid from-jid))))
+                 (when (and buf (eq (buffer-type buf) :muc))
+                   ;; Collect feature vars for IRC channel modes
+                   (let ((features nil))
+                     (dolist (child (xml-children query))
+                       (when (and (typep child 'xml-element)
+                                  (string= (xml-name child) "feature"))
+                         (let ((var (xml-attr child "var")))
+                           (when var (push var features)))))
+                     ;; Map common MUC/IRC features to mode flags
+                     (let ((modes ""))
+                       (when (member "muc_noexternal" features :test #'string=)
+                         (setf modes (concatenate 'string modes "n")))
+                       (when (member "muc_membersonly" features :test #'string=)
+                         (setf modes (concatenate 'string modes "i")))
+                       (when (member "muc_moderated" features :test #'string=)
+                         (setf modes (concatenate 'string modes "m")))
+                       (when (member "muc_nosubject" features :test #'string=)
+                         (setf modes (concatenate 'string modes "t")))
+                       (when (member "muc_hidden" features :test #'string=)
+                         (setf modes (concatenate 'string modes "s")))
+                       (when (> (length modes) 0)
+                         (setf (buffer-modes buf) (concatenate 'string "+" modes))
+                         (debug-log "Disco: ~a modes=+~a" (bare-jid from-jid) modes)))))))))
          ;; Handle MAM results (messages wrapped in <result> inside <message>)
          )))
     (t nil)))

@@ -38,7 +38,11 @@
    (mention-p :initform nil :accessor buffer-mention-p
               :documentation "Whether there's an unread mention")
    (participants :initform nil :accessor buffer-participants
-                 :documentation "List of participant nicks (for MUCs)")
+                 :documentation "List of (nick . role) conses for MUCs. Role is :moderator, :participant, :visitor, or :none")
+   (topic :initform nil :accessor buffer-topic
+          :documentation "MUC topic / subject string")
+   (modes :initform nil :accessor buffer-modes
+          :documentation "IRC channel modes string (e.g. +Cnt)")
    (scroll-offset :initform 0 :accessor buffer-scroll-offset)
    (omemo-p :initform nil :accessor buffer-omemo-p
             :documentation "Whether OMEMO encryption is active"))
@@ -103,6 +107,52 @@
     (if (char= (char stripped 0) #\#)
         stripped
         (concatenate 'string "#" stripped))))
+
+;;; Participant helpers for MUC role tracking
+
+(defun participant-nick (entry)
+  "Get nick from a participant entry (nick . role)."
+  (if (consp entry) (car entry) entry))
+
+(defun participant-role (entry)
+  "Get role from a participant entry (nick . role)."
+  (if (consp entry) (cdr entry) :participant))
+
+(defun role-prefix (role)
+  "Return IRC-style prefix for a MUC role."
+  (case role
+    (:owner "~")
+    (:admin "&")
+    (:moderator "@")
+    (:participant "+")
+    (t "")))
+
+(defun affiliation-to-role (affiliation role)
+  "Map XMPP affiliation+role to a display role keyword.
+   Affiliation: owner, admin, member, none, outcast.
+   Role: moderator, participant, visitor, none."
+  (cond
+    ((equal affiliation "owner") :owner)
+    ((equal affiliation "admin") :admin)
+    ((equal role "moderator") :moderator)
+    (t :participant)))
+
+(defun buffer-add-participant (buffer nick &key (role :participant))
+  "Add or update a participant in the buffer."
+  (let ((existing (assoc nick (buffer-participants buffer) :test #'string=)))
+    (if existing
+        (setf (cdr existing) role)
+        (push (cons nick role) (buffer-participants buffer)))))
+
+(defun buffer-remove-participant (buffer nick)
+  "Remove a participant from the buffer."
+  (setf (buffer-participants buffer)
+        (remove nick (buffer-participants buffer)
+                :test #'string= :key #'car)))
+
+(defun buffer-participant-nicks (buffer)
+  "Get sorted list of participant nicks."
+  (sort (mapcar #'car (buffer-participants buffer)) #'string<))
 
 ;;; Contact class
 

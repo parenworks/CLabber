@@ -75,11 +75,30 @@
         (h (panel-height panel))
         (buf (chat-panel-buffer panel))
         (theme (current-theme)))
-    ;; Draw border with title
+    ;; Draw border with title (include participant count + topic for MUCs)
     (draw-box x y w h
               :title (when buf
-                       (or (clabber.model:buffer-display-name buf)
-                           (clabber.model:buffer-name buf)))
+                       (let* ((name (or (clabber.model:buffer-display-name buf)
+                                        (clabber.model:buffer-name buf)))
+                              (modes (clabber.model:buffer-modes buf))
+                              (topic (clabber.model:buffer-topic buf))
+                              (nparts (length (clabber.model:buffer-participants buf)))
+                              (header (cond
+                                        ;; Modes available (non-biboumi MUCs)
+                                        (modes (format nil "~a [~a]" name modes))
+                                        ;; Show participant count for MUCs
+                                        ((and (eq (clabber.model:buffer-type buf) :muc)
+                                              (> nparts 0))
+                                         (format nil "~a (~d)" name nparts))
+                                        (t name))))
+                         (if (and topic (> (length topic) 0))
+                             (let* ((max-topic (- w (length header) 5))
+                                    (short-topic (if (> (length topic) max-topic)
+                                                     (concatenate 'string
+                                                       (subseq topic 0 (max 0 (- max-topic 3))) "...")
+                                                     topic)))
+                               (format nil "~a | ~a" header short-topic))
+                             header)))
               :active-p (panel-active-p panel))
     ;; Clear content area
     (clear-panel-content x y w h)
@@ -249,6 +268,15 @@
 
 ;;; Participants panel - right sidebar for MUC members
 
+(defun role-sort-key (role)
+  "Return numeric sort key for MUC roles (higher = more important)."
+  (case role
+    (:owner 4)
+    (:admin 3)
+    (:moderator 2)
+    (:participant 1)
+    (t 0)))
+
 (defclass participants-panel (panel)
   ((participants :initarg :participants :accessor participants-list :initform nil))
   (:documentation "Right sidebar showing MUC participants"))
@@ -262,18 +290,39 @@
     (draw-box x y w h :title "WHO" :active-p nil)
     (clear-panel-content x y w h)
     (let ((row (1+ y))
-          (content-w (- w 2)))
-      (dolist (nick (participants-list panel))
-        (when (< row (+ y h -1))
-          (cursor-to row (+ x 1))
-          (let ((nick-color (theme-nick-color theme nick)))
-            (when nick-color (emit-fg nick-color *terminal-io*))
-            (princ (if (> (length nick) content-w)
-                       (subseq nick 0 content-w)
-                       nick)
-                   *terminal-io*)
-            (reset))
-          (incf row))))))
+          (content-w (- w 2))
+          (entries (participants-list panel)))
+      ;; Sort by role priority: owner > admin > moderator > participant
+      (let ((sorted (sort (copy-list entries)
+                          (lambda (a b)
+                            (let ((ra (clabber.model:participant-role a))
+                                  (rb (clabber.model:participant-role b)))
+                              (or (> (role-sort-key ra) (role-sort-key rb))
+                                  (and (= (role-sort-key ra) (role-sort-key rb))
+                                       (string< (clabber.model:participant-nick a)
+                                                (clabber.model:participant-nick b)))))))))
+        (dolist (entry sorted)
+          (when (< row (+ y h -1))
+            (cursor-to row (+ x 1))
+            (let* ((nick (clabber.model:participant-nick entry))
+                   (role (clabber.model:participant-role entry))
+                   (prefix (clabber.model:role-prefix role))
+                   (nick-color (theme-nick-color theme nick)))
+              ;; Role prefix in a distinct color
+              (when (> (length prefix) 0)
+                (emit-fg (theme-system-color theme) *terminal-io*)
+                (bold)
+                (princ prefix *terminal-io*)
+                (reset))
+              ;; Nick
+              (when nick-color (emit-fg nick-color *terminal-io*))
+              (let ((max-nick (- content-w (length prefix))))
+                (princ (if (> (length nick) max-nick)
+                           (subseq nick 0 max-nick)
+                           nick)
+                       *terminal-io*))
+              (reset))
+            (incf row)))))))
 
 ;;; Input bar - text input at top of screen
 

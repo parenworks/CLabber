@@ -181,7 +181,17 @@
            #:buffer-participants
            #:buffer-scroll-offset
            #:buffer-omemo-p
+           #:buffer-topic
+           #:buffer-modes
            #:buffer-add-message
+           #:buffer-add-participant
+           #:buffer-remove-participant
+           #:buffer-participant-nicks
+           ;; Participant helpers
+           #:participant-nick
+           #:participant-role
+           #:role-prefix
+           #:affiliation-to-role
            ;; Contact
            #:contact
            #:make-contact
@@ -288,6 +298,7 @@
            ;; XML namespaces
            #:+ns-stream+ #:+ns-client+ #:+ns-sasl+ #:+ns-tls+
            #:+ns-bind+ #:+ns-session+ #:+ns-roster+
+           #:+ns-disco-info+ #:+ns-disco-items+
            #:+ns-muc+ #:+ns-muc-user+ #:+ns-pubsub+
            #:+ns-bookmarks+ #:+ns-bookmarks2+ #:+ns-private+
            #:+ns-carbons+ #:+ns-chatstates+ #:+ns-mam+
@@ -314,6 +325,7 @@
            #:xmpp-get-roster
            #:xmpp-get-bookmarks
            #:xmpp-enable-carbons
+           #:xmpp-disco-info
            #:xmpp-query-mam
            #:xmpp-accept-subscription
            #:xmpp-add-contact
@@ -333,7 +345,7 @@
            #:stanza
            #:stanza-id #:stanza-to #:stanza-from #:stanza-type #:stanza-xml
            #:message-stanza
-           #:message-body #:message-delay #:message-chat-state #:message-omemo-encrypted
+           #:message-body #:message-subject #:message-delay #:message-chat-state #:message-omemo-encrypted
            #:presence-stanza
            #:presence-show #:presence-status
            #:iq-stanza

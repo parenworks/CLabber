@@ -194,6 +194,17 @@
     (xmpp-send conn iq)))
 
 ;;; ============================================================
+;;; Service Discovery (XEP-0030)
+;;; ============================================================
+
+(defun xmpp-disco-info (conn jid)
+  "Send a disco#info query to JID."
+  (let* ((query (make-xml-element "query" :namespace +ns-disco-info+))
+         (iq (make-iq-stanza "get" :to jid :query query
+                             :id (format nil "disco-~a" (random 100000)))))
+    (xmpp-send conn iq)))
+
+;;; ============================================================
 ;;; MUC (XEP-0045)
 ;;; ============================================================
 
