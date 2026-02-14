@@ -83,29 +83,31 @@
               :active-p (panel-active-p panel))
     ;; Clear content area
     (clear-panel-content x y w h)
-    ;; Render messages
-    (when buf
+    ;; Render messages (newest at top)
+    (when (and buf (> (fill-pointer (clabber.model:buffer-messages buf)) 0))
       (let* ((msgs (clabber.model:buffer-messages buf))
              (count (fill-pointer msgs))
              (content-h (- h 2))
              (content-w (- w 2))
              (offset (clabber.model:buffer-scroll-offset buf))
-             ;; Show newest messages at bottom of panel
-             (start (max 0 (- count content-h offset)))
-             (end (max 0 (- count offset)))
+             ;; Start from newest, walk backwards
+             (start-idx (min (1- count) (max 0 (- count 1 offset))))
              (row (1+ y)))
-        ;; Pad empty lines at top if fewer messages than panel height
-        (when (< (- end start) content-h)
-          (incf row (- content-h (- end start))))
-        (loop for i from start below end
+        (loop for i from start-idx downto 0
               for msg = (aref msgs i)
               while (< row (+ y h -1))
-              do (cursor-to row (+ x 1))
-                 (let* ((ts (clabber.model:message-timestamp msg))
+              do (let* ((ts (clabber.model:message-timestamp msg))
                         (nick (clabber.model:message-nick msg))
                         (text (clabber.model:message-text msg))
                         (level (clabber.model:message-level msg))
-                        (lvl-color (theme-level-color theme level)))
+                        (lvl-color (theme-level-color theme level))
+                        (prefix-len (+ 8 (if nick (+ (length nick) 2) 0)))
+                        (text-width (max 1 (- content-w prefix-len)))
+                        ;; Calculate how many rows this message needs
+                        (text-len (length text))
+                        (num-lines (max 1 (ceiling text-len text-width))))
+                   ;; First line: timestamp + nick + start of text
+                   (cursor-to row (+ x 1))
                    ;; Timestamp
                    (emit-fg (theme-timestamp theme) *terminal-io*)
                    (multiple-value-bind (sec min hour)
@@ -123,21 +125,31 @@
                        (format *terminal-io* "~A" nick)
                        (reset)
                        (princ ": " *terminal-io*)))
-                   ;; Message text (truncate to fit)
-                   (let* ((prefix-len (+ 8 (if nick (+ (length nick) 2) 0)))
-                          (max-text (max 1 (- content-w prefix-len)))
-                          (display-text (if (> (length text) max-text)
-                                            (concatenate 'string
-                                                         (subseq text 0 (- max-text 1))
-                                                         "…")
-                                            text)))
-                     (when lvl-color (emit-fg lvl-color *terminal-io*))
-                     (when (clabber.model:message-highlight-p msg)
-                       (emit-fg (theme-mention-indicator theme) *terminal-io*)
-                       (bold))
-                     (princ display-text *terminal-io*)
-                     (reset)))
-                 (incf row))
+                   ;; Message text with wrapping
+                   (when lvl-color (emit-fg lvl-color *terminal-io*))
+                   (when (clabber.model:message-highlight-p msg)
+                     (emit-fg (theme-mention-indicator theme) *terminal-io*)
+                     (bold))
+                   ;; First line of text
+                   (let ((first-chunk (subseq text 0 (min text-len text-width))))
+                     (princ first-chunk *terminal-io*))
+                   (reset)
+                   (incf row)
+                   ;; Continuation lines (indented under first letter of text)
+                   (loop for line-idx from 1 below num-lines
+                         while (< row (+ y h -1))
+                         for start = (* line-idx text-width)
+                         for end = (min text-len (* (1+ line-idx) text-width))
+                         do (cursor-to row (+ x 1))
+                            ;; Indent with spaces to align under message text
+                            (dotimes (j prefix-len) (princ #\Space *terminal-io*))
+                            (when lvl-color (emit-fg lvl-color *terminal-io*))
+                            (when (clabber.model:message-highlight-p msg)
+                              (emit-fg (theme-mention-indicator theme) *terminal-io*)
+                              (bold))
+                            (princ (subseq text start end) *terminal-io*)
+                            (reset)
+                            (incf row))))
         ;; OMEMO indicator in top-right corner
         (when (clabber.model:buffer-omemo-p buf)
           (cursor-to y (- (+ x w) 4))
@@ -438,7 +450,7 @@
                   (emit-fg (theme-unread-indicator theme) *terminal-io*)
                   (princ "◉ " *terminal-io*))
                  (:error
-                  (emit-fg (theme-error-color theme) *terminal-io*)
+                  (emit-fg (theme-mention-indicator theme) *terminal-io*)
                   (princ "✗ " *terminal-io*))
                  (t
                   (emit-fg (theme-timestamp theme) *terminal-io*)

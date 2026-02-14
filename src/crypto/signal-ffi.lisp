@@ -230,6 +230,10 @@
   (is-prekey :int)
   (plaintext-out :pointer) (plaintext-len-out :pointer))
 
+(cffi:defcfun ("clabber_signal_has_identity" %signal-has-identity) :int)
+
+(cffi:defcfun ("clabber_signal_get_registration_id" %signal-get-registration-id) :uint32)
+
 (cffi:defcfun ("clabber_signal_has_session" %signal-has-session) :int
   (name :string) (device-id :int32))
 
@@ -374,6 +378,14 @@
               (unless (zerop result)
                 (error "Failed to build session: ~A" result))
               t)))))))
+
+(defun signal-has-identity-p ()
+  "Check if we have an identity key pair loaded (from disk or generated)."
+  (plusp (%signal-has-identity)))
+
+(defun signal-get-registration-id ()
+  "Get our registration ID."
+  (%signal-get-registration-id))
 
 (defun signal-has-session-p (jid device-id)
   "Check if we have an established session with JID/DEVICE-ID."

@@ -104,12 +104,15 @@
          (user (subseq jid 0 (position #\@ jid)))
          (file (cond
                  ((probe-file *authinfo-gpg-file*)
-                  ;; Decrypt with gpg
-                  (ignore-errors
-                    (with-output-to-string (s)
-                      (sb-ext:run-program "gpg" (list "--quiet" "--batch" "--decrypt"
-                                                      (namestring *authinfo-gpg-file*))
-                                          :output s :error nil))))
+                  ;; Decrypt with gpg - no --batch so pinentry can prompt
+                  (with-output-to-string (s)
+                    (let ((proc (sb-ext:run-program "gpg" (list "--quiet" "--decrypt"
+                                                                (namestring *authinfo-gpg-file*))
+                                                    :output s :error *error-output*
+                                                    :input :stream :wait t
+                                                    :search t)))
+                      (unless (zerop (sb-ext:process-exit-code proc))
+                        (return-from lookup-authinfo-password nil)))))
                  ((probe-file *authinfo-file*)
                   (with-open-file (in *authinfo-file*)
                     (with-output-to-string (s)

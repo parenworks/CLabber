@@ -40,4 +40,8 @@
        (let* ((cfg (load-config))
               (app (make-app)))
          (setf (app-config app) cfg)
-         (app-run app))))))
+         ;; Resolve passwords BEFORE entering raw terminal mode
+         ;; (GPG pinentry needs a normal terminal)
+         (app-resolve-passwords app)
+         (app-run app)
+         (sb-ext:exit))))))

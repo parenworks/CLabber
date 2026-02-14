@@ -583,28 +583,28 @@ int clabber_signal_init(const char *store_path) {
             /* First 4 bytes: registration ID (little-endian) */
             g_registration_id = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
             /* Rest: serialized identity key pair (pub_len(2) + pub + priv_len(2) + priv) */
-            if (len > 4) {
+            if (len > 6) {
                 uint16_t pub_len = data[4] | (data[5] << 8);
-                uint8_t *pub_data = data + 6;
-                uint16_t priv_len = data[6 + pub_len] | (data[7 + pub_len] << 8);
-                uint8_t *priv_data = data + 8 + pub_len;
+                if (len >= (size_t)(8 + pub_len)) {
+                    uint8_t *pub_data = data + 6;
+                    uint16_t priv_len = data[6 + pub_len] | (data[7 + pub_len] << 8);
+                    uint8_t *priv_data = data + 8 + pub_len;
 
-                ec_public_key *pub_key = NULL;
-                ec_private_key *priv_key = NULL;
-                curve_decode_point(&pub_key, pub_data, pub_len, g_context);
-                curve_decode_private_point(&priv_key, priv_data, priv_len, g_context);
-                if (pub_key && priv_key) {
-                    ec_key_pair *kp = NULL;
-                    ec_key_pair_create(&kp, pub_key, priv_key);
-                    if (kp) {
-                        ratchet_identity_key_pair *ikp = NULL;
-                        /* Use the key pair to create identity key pair */
-                        signal_protocol_key_helper_generate_identity_key_pair(&ikp, g_context);
-                        /* Actually we need to reconstruct from loaded keys */
-                        /* For now, just regenerate - TODO: proper deserialization */
-                        if (ikp) {
-                            SIGNAL_UNREF(ikp);
+                    if (len >= (size_t)(8 + pub_len + priv_len)) {
+                        ec_public_key *pub_key = NULL;
+                        ec_private_key *priv_key = NULL;
+                        result = curve_decode_point(&pub_key, pub_data, pub_len, g_context);
+                        if (result == 0) {
+                            result = curve_decode_private_point(&priv_key, priv_data, priv_len, g_context);
                         }
+                        if (result == 0 && pub_key && priv_key) {
+                            result = ratchet_identity_key_pair_create(&g_identity_key_pair, pub_key, priv_key);
+                            if (result == 0) {
+                                fprintf(stderr, "clabber-signal: loaded identity, reg_id=%u\n", g_registration_id);
+                            }
+                        }
+                        if (pub_key) SIGNAL_UNREF(pub_key);
+                        if (priv_key) SIGNAL_UNREF(priv_key);
                     }
                 }
             }
@@ -922,6 +922,14 @@ int clabber_signal_decrypt(const char *name, int32_t device_id,
     memcpy(*plaintext_out, signal_buffer_data(plaintext), *plaintext_len_out);
     signal_buffer_free(plaintext);
     return 0;
+}
+
+int clabber_signal_has_identity(void) {
+    return (g_identity_key_pair != NULL && g_registration_id != 0) ? 1 : 0;
+}
+
+uint32_t clabber_signal_get_registration_id(void) {
+    return g_registration_id;
 }
 
 int clabber_signal_has_session(const char *name, int32_t device_id) {

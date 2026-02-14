@@ -18,6 +18,27 @@
 (alexandria:define-constant +omemo-bundles-node-legacy+ "eu.siacs.conversations.axolotl.bundles:"
   :test #'string=)
 
+;;; ============================================================
+;;; Utility
+;;; ============================================================
+
+(defun ensure-usb8 (bytes)
+  "Ensure BYTES is a (simple-array (unsigned-byte 8) (*)).
+   CFFI foreign-array-to-lisp may return arrays with wrong element type."
+  (if (typep bytes '(simple-array (unsigned-byte 8) (*)))
+      bytes
+      (let ((result (make-array (length bytes) :element-type '(unsigned-byte 8))))
+        (dotimes (i (length bytes) result)
+          (setf (aref result i) (aref bytes i))))))
+
+(defun bytes-to-base64 (bytes)
+  "Encode byte array to base64 string."
+  (cl-base64:usb8-array-to-base64-string (ensure-usb8 bytes)))
+
+(defun base64-to-bytes (string)
+  "Decode base64 string to byte array."
+  (cl-base64:base64-string-to-usb8-array string))
+
 ;;; Device list cache: JID -> list of device IDs
 (defvar *device-list-cache* (make-hash-table :test 'equal))
 
@@ -41,19 +62,16 @@
 (defun omemo-init ()
   "Initialize OMEMO: load or generate identity, prekeys, signed prekey."
   (signal-init)
-  ;; Generate identity if we don't have one
-  ;; TODO: Check if identity already exists on disk
-  (multiple-value-bind (reg-id pub-bytes priv-bytes)
-      (signal-generate-identity)
-    (declare (ignore priv-bytes))
+  (unless (signal-has-identity-p)
+    ;; Generate new identity (saves to disk)
+    (signal-generate-identity))
+  (let ((reg-id (signal-get-registration-id)))
     (setf *omemo-registration-id* reg-id)
-    ;; Device ID is registration ID for legacy OMEMO
-    (setf *omemo-device-id* reg-id)
-    ;; Generate 100 one-time prekeys
-    (signal-generate-prekeys 1 100)
-    ;; Generate signed prekey with ID 1
-    (signal-generate-signed-prekey 1)
-    (values *omemo-device-id* pub-bytes)))
+    (setf *omemo-device-id* reg-id))
+  ;; Always (re)generate prekeys and signed prekey so they're available
+  (signal-generate-prekeys 1 100)
+  (signal-generate-signed-prekey 1)
+  (values *omemo-device-id* (signal-get-identity-public)))
 
 ;;; ============================================================
 ;;; Bundle publishing (XML construction)
@@ -112,14 +130,17 @@
 (defun omemo-decrypt-payload (iv ciphertext key-material)
   "Decrypt an OMEMO payload with AES-128-GCM.
    KEY-MATERIAL is 32 bytes: key(16) + tag(16)."
-  (let* ((key (subseq key-material 0 16))
-         (tag (subseq key-material 16 32))
+  (let* ((km (ensure-usb8 key-material))
+         (iv8 (ensure-usb8 iv))
+         (ct8 (ensure-usb8 ciphertext))
+         (key (subseq km 0 16))
+         (tag (subseq km 16 32))
          (cipher (ironclad:make-authenticated-encryption-mode
                   :gcm :cipher-name :aes :key key
-                  :initialization-vector iv))
-         (plaintext (make-array (length ciphertext) :element-type '(unsigned-byte 8))))
+                  :initialization-vector iv8))
+         (plaintext (make-array (length ct8) :element-type '(unsigned-byte 8))))
     (ironclad:process-associated-data cipher (make-array 0 :element-type '(unsigned-byte 8)))
-    (ironclad:decrypt cipher ciphertext plaintext)
+    (ironclad:decrypt cipher ct8 plaintext)
     ;; Verify tag
     (unless (equalp tag (ironclad:produce-tag cipher))
       (error "Bad authentication tag"))
@@ -164,19 +185,10 @@
   ;; Cache sender's device ID
   (cache-device-list from-jid (list sender-device-id))
   ;; Decrypt the key material using Signal session
-  (let ((key-material (signal-session-decrypt from-jid sender-device-id key-data
-                                               :prekey-p is-prekey)))
+  (let ((key-material (ensure-usb8
+                       (signal-session-decrypt from-jid sender-device-id
+                                               (ensure-usb8 key-data)
+                                               :prekey-p is-prekey))))
     ;; Decrypt the payload
     (omemo-decrypt-payload iv ciphertext key-material)))
 
-;;; ============================================================
-;;; Utility
-;;; ============================================================
-
-(defun bytes-to-base64 (bytes)
-  "Encode byte array to base64 string."
-  (cl-base64:usb8-array-to-base64-string bytes))
-
-(defun base64-to-bytes (string)
-  "Decode base64 string to byte array."
-  (cl-base64:base64-string-to-usb8-array string))

@@ -17,9 +17,10 @@
     (force-output *debug-log-stream*)))
 
 (defun open-debug-log ()
-  (setf *debug-log-stream*
-        (open *debug-log-path* :direction :output
-              :if-exists :supersede :if-does-not-exist :create)))
+  (unless *debug-log-stream*
+    (setf *debug-log-stream*
+          (open *debug-log-path* :direction :output
+                :if-exists :supersede :if-does-not-exist :create))))
 
 (defun close-debug-log ()
   (when *debug-log-stream*
@@ -252,6 +253,59 @@
                        (find-conferences child parent-item-id))))))
         (find-conferences query)))
     (nreverse rooms)))
+
+;;; ============================================================
+;;; PEP / PubSub (XEP-0163)
+;;; ============================================================
+
+(defun xmpp-pep-publish (conn node item-id item-children)
+  "Publish an item to a PEP node."
+  (let* ((item (make-xml-element "item"
+                 :attributes (when item-id `(("id" . ,item-id)))
+                 :children item-children))
+         (publish (make-xml-element "publish"
+                    :attributes `(("node" . ,node))
+                    :children (list item)))
+         (pubsub (make-xml-element "pubsub"
+                   :namespace +ns-pubsub+
+                   :children (list publish)))
+         (iq (make-iq-stanza "set" :query pubsub :id (format nil "pep-~a" (random 100000)))))
+    (xmpp-send conn iq)))
+
+(defun xmpp-pep-fetch (conn jid node)
+  "Fetch items from a PEP node for JID."
+  (let* ((items (make-xml-element "items"
+                  :attributes `(("node" . ,node))))
+         (pubsub (make-xml-element "pubsub"
+                   :namespace +ns-pubsub+
+                   :children (list items)))
+         (iq (make-iq-stanza "get" :to jid :query pubsub
+                             :id (format nil "pep-fetch-~a" (random 100000)))))
+    (xmpp-send conn iq)))
+
+(defun xmpp-publish-omemo-devicelist (conn device-id)
+  "Publish our OMEMO device list via PEP."
+  (let* ((device (make-xml-element "device"
+                   :attributes `(("id" . ,(princ-to-string device-id)))))
+         (list-el (make-xml-element "list"
+                    :namespace "eu.siacs.conversations.axolotl"
+                    :children (list device))))
+    (xmpp-pep-publish conn "eu.siacs.conversations.axolotl.devicelist"
+                      "current" (list list-el))))
+
+(defun xmpp-publish-omemo-bundle (conn device-id bundle-xml-element)
+  "Publish our OMEMO bundle via PEP."
+  (let ((node (format nil "eu.siacs.conversations.axolotl.bundles:~a" device-id)))
+    (xmpp-pep-publish conn node "current" (list bundle-xml-element))))
+
+(defun xmpp-fetch-omemo-devicelist (conn jid)
+  "Fetch OMEMO device list for JID."
+  (xmpp-pep-fetch conn jid "eu.siacs.conversations.axolotl.devicelist"))
+
+(defun xmpp-fetch-omemo-bundle (conn jid device-id)
+  "Fetch OMEMO bundle for JID/device-id."
+  (xmpp-pep-fetch conn jid
+                  (format nil "eu.siacs.conversations.axolotl.bundles:~a" device-id)))
 
 ;;; ============================================================
 ;;; MAM (XEP-0313)

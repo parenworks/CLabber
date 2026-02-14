@@ -47,9 +47,38 @@
 (defun make-buffer (&key name display-name (type :dm))
   (make-instance 'buffer :name name :display-name display-name :type type))
 
+(defun buffer-message-duplicate-p (buffer message)
+  "Check if a message with same text, nick, and timestamp already exists."
+  (let ((msgs (buffer-messages buffer))
+        (ts (message-timestamp message))
+        (text (message-text message))
+        (nick (message-nick message)))
+    (loop for i from (max 0 (- (fill-pointer msgs) 50)) below (fill-pointer msgs)
+          for m = (aref msgs i)
+          thereis (and (= ts (message-timestamp m))
+                       (equal text (message-text m))
+                       (equal nick (message-nick m))))))
+
 (defun buffer-add-message (buffer message)
-  "Add a message to the buffer, incrementing unread count."
-  (vector-push-extend message (buffer-messages buffer))
+  "Add a message to the buffer, inserting in timestamp order. Deduplicates."
+  (when (buffer-message-duplicate-p buffer message)
+    (return-from buffer-add-message message))
+  (let* ((msgs (buffer-messages buffer))
+         (ts (message-timestamp message))
+         (count (fill-pointer msgs)))
+    ;; If empty or newer than last message, just append
+    (if (or (zerop count)
+            (>= ts (message-timestamp (aref msgs (1- count)))))
+        (vector-push-extend message msgs)
+        ;; Otherwise insert in sorted position
+        (let ((pos count))
+          (vector-push-extend message msgs) ; extend first
+          ;; Shift elements right to make room
+          (loop while (and (> pos 0)
+                           (< ts (message-timestamp (aref msgs (1- pos)))))
+                do (setf (aref msgs pos) (aref msgs (1- pos)))
+                   (decf pos))
+          (setf (aref msgs pos) message))))
   (incf (buffer-unread-count buffer))
   (when (message-highlight-p message)
     (setf (buffer-mention-p buffer) t))

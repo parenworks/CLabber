@@ -49,10 +49,12 @@ clean:
 
 # Development: run from source
 dev: lib
+	find ~/.cache/common-lisp/ -path "*clabber*" -delete 2>/dev/null; true
 	LD_LIBRARY_PATH=. $(SBCL) \
 		--eval "(require :asdf)" \
 		--eval "(load \"~/quicklisp/setup.lisp\")" \
 		--eval "(push #p\"$(shell pwd)/\" asdf:*central-registry*)" \
+		--eval "(asdf:clear-system :clabber)" \
 		--eval "(ql:quickload :clabber)" \
 		--eval "(clabber:main)"
 

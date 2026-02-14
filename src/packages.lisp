@@ -141,6 +141,11 @@
            #:theme-mention-indicator
            #:theme-omemo-lock
            #:theme-timestamp
+           #:theme-join-color
+           #:theme-part-color
+           #:theme-error-color
+           #:theme-system-color
+           #:theme-presence-color
            #:theme-input-prompt
            #:theme-box-h
            #:theme-box-v
@@ -183,7 +188,9 @@
            #:contact-jid
            #:contact-nick
            #:contact-presence
-           #:contact-subscription))
+           #:contact-subscription
+           ;; Utilities
+           #:strip-muc-name))
 
 (defpackage #:clabber.widgets
   (:use #:cl #:clabber.ansi #:clabber.theme #:clabber.model)
@@ -258,7 +265,8 @@
            #:account-password
            #:account-client-cert
            #:account-autojoin
-           #:account-autoconnect-p))
+           #:account-autoconnect-p
+           #:lookup-authinfo-password))
 
 (defpackage #:clabber.xmpp
   (:use #:cl)
@@ -308,6 +316,14 @@
            #:xmpp-enable-carbons
            #:xmpp-query-mam
            #:xmpp-accept-subscription
+           ;; PEP / OMEMO PubSub
+           #:xmpp-pep-publish
+           #:xmpp-pep-fetch
+           #:xmpp-publish-omemo-devicelist
+           #:xmpp-publish-omemo-bundle
+           #:xmpp-fetch-omemo-devicelist
+           #:xmpp-fetch-omemo-bundle
+           #:xmpp-send-omemo-message
            #:conn-jid
            #:conn-bound-jid
            #:conn-connected-p
@@ -351,9 +367,27 @@
            #:omemo-init
            #:omemo-encrypt-message
            #:omemo-decrypt-message
-           #:omemo-publish-bundle
-           #:omemo-fetch-bundle
-           #:omemo-enabled-p))
+           #:omemo-enabled-p
+           #:omemo-bundle-xml
+           #:omemo-encrypt-payload
+           #:omemo-decrypt-payload
+           #:*omemo-device-id*
+           #:*omemo-registration-id*
+           #:*device-list-cache*
+           #:cache-device-list
+           #:get-cached-device-list
+           #:base64-to-bytes
+           #:bytes-to-base64
+           #:signal-get-identity-public
+           #:signal-has-identity-p
+           #:signal-get-registration-id
+           #:signal-has-session-p
+           #:signal-build-session
+           #:+omemo-ns-legacy+
+           #:+omemo-devicelist-node-legacy+
+           #:+omemo-bundles-node-legacy+
+           #:+ciphertext-prekey-type+
+           #:+ciphertext-signal-type+))
 
 (defpackage #:clabber
   (:use #:cl
