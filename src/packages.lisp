@@ -262,25 +262,79 @@
 
 (defpackage #:clabber.xmpp
   (:use #:cl)
-  (:export #:xmpp-connection
+  (:export ;; XML element
+           #:xml-element
+           #:make-xml-element
+           #:xml-name
+           #:xml-namespace
+           #:xml-attributes
+           #:xml-children
+           #:xml-text
+           #:xml-attr
+           #:xml-child
+           #:xml-children-named
+           #:xml-child-by-ns
+           #:serialize-xml
+           #:parse-full-element
+           #:decode-xml-entities
+           ;; XML namespaces
+           #:+ns-stream+ #:+ns-client+ #:+ns-sasl+ #:+ns-tls+
+           #:+ns-bind+ #:+ns-session+ #:+ns-roster+
+           #:+ns-muc+ #:+ns-muc-user+ #:+ns-pubsub+
+           #:+ns-bookmarks+ #:+ns-bookmarks2+ #:+ns-private+
+           #:+ns-carbons+ #:+ns-chatstates+ #:+ns-mam+
+           ;; Stream
+           #:xmpp-stream
+           #:xmpp-stream-connect
+           #:xmpp-stream-connect-tls
+           #:xmpp-stream-disconnect
+           #:xmpp-stream-send
+           #:xmpp-stream-send-raw
+           ;; Connection
+           #:xmpp-connection
            #:xmpp-connect
            #:xmpp-disconnect
            #:xmpp-send
            #:xmpp-send-message
+           #:xmpp-send-omemo-message
+           #:xmpp-send-groupchat
+           #:xmpp-send-presence
+           #:xmpp-send-chat-state
+           #:xmpp-receive
            #:xmpp-join-muc
            #:xmpp-leave-muc
-           #:xmpp-set-presence
+           #:xmpp-get-roster
+           #:xmpp-get-bookmarks
+           #:xmpp-enable-carbons
+           #:xmpp-query-mam
+           #:xmpp-accept-subscription
+           #:conn-jid
+           #:conn-bound-jid
+           #:conn-connected-p
+           #:conn-stream
            ;; Stanza types
            #:stanza
+           #:stanza-id #:stanza-to #:stanza-from #:stanza-type #:stanza-xml
            #:message-stanza
+           #:message-body #:message-delay #:message-chat-state #:message-omemo-encrypted
            #:presence-stanza
+           #:presence-show #:presence-status
            #:iq-stanza
-           ;; Callbacks
-           #:on-message
-           #:on-presence
-           #:on-iq
-           #:on-connect
-           #:on-disconnect))
+           #:iq-query
+           #:make-message-stanza #:make-presence-stanza #:make-iq-stanza
+           #:stanza-to-xml
+           #:parse-stanza
+           #:parse-bookmarks
+           #:generate-id
+           ;; JID utilities
+           #:parse-jid
+           #:bare-jid
+           #:jid-resource
+           ;; Debug
+           #:debug-log
+           #:open-debug-log
+           #:close-debug-log
+           #:current-timestamp))
 
 (defpackage #:clabber.crypto
   (:use #:cl)

@@ -28,7 +28,10 @@
      (:file "layout")
      (:module "xmpp"
       :components
-      ((:file "stanza")
+      ((:file "xml")
+       (:file "stream")
+       (:file "sasl")
+       (:file "stanza")
        (:file "connection")))
      (:module "crypto"
       :components
