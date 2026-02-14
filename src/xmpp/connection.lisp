@@ -283,13 +283,16 @@
                              :id (format nil "pep-fetch-~a" (random 100000)))))
     (xmpp-send conn iq)))
 
-(defun xmpp-publish-omemo-devicelist (conn device-id)
-  "Publish our OMEMO device list via PEP."
-  (let* ((device (make-xml-element "device"
-                   :attributes `(("id" . ,(princ-to-string device-id)))))
+(defun xmpp-publish-omemo-devicelist (conn device-id &optional existing-device-ids)
+  "Publish our OMEMO device list via PEP, merging with EXISTING-DEVICE-IDS."
+  (let* ((all-ids (remove-duplicates (cons device-id (or existing-device-ids nil))))
+         (device-elements (mapcar (lambda (id)
+                                    (make-xml-element "device"
+                                      :attributes `(("id" . ,(princ-to-string id)))))
+                                  all-ids))
          (list-el (make-xml-element "list"
                     :namespace "eu.siacs.conversations.axolotl"
-                    :children (list device))))
+                    :children device-elements)))
     (xmpp-pep-publish conn "eu.siacs.conversations.axolotl.devicelist"
                       "current" (list list-el))))
 

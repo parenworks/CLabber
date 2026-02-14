@@ -316,6 +316,7 @@
            #:xmpp-enable-carbons
            #:xmpp-query-mam
            #:xmpp-accept-subscription
+           #:xmpp-add-contact
            ;; PEP / OMEMO PubSub
            #:xmpp-pep-publish
            #:xmpp-pep-fetch

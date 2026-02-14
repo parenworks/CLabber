@@ -5,7 +5,7 @@
 
 (defclass layout ()
   ((roster-width :initarg :roster-width :accessor layout-roster-width :initform 28)
-   (participants-width :initarg :participants-width :accessor layout-participants-width :initform 18)
+   (participants-width :initarg :participants-width :accessor layout-participants-width :initform 22)
    (split-mode :initarg :split-mode :accessor layout-split-mode :initform nil
                :documentation "Split mode: nil (single), :horizontal, :vertical")
    ;; Computed panel instances
@@ -18,7 +18,7 @@
    (buffer-bar :accessor layout-buffer-bar :initform nil))
   (:documentation "Screen layout manager"))
 
-(defun make-layout (&key (roster-width 28) (participants-width 18) split-mode)
+(defun make-layout (&key (roster-width 28) (participants-width 22) split-mode)
   (make-instance 'layout
                  :roster-width roster-width
                  :participants-width participants-width
@@ -31,7 +31,7 @@
   (let* ((roster-w (min (layout-roster-width layout) (floor width 3)))
          (participants-w (layout-participants-width layout))
          (chat-x (1+ roster-w))
-         (chat-w (- width roster-w participants-w))
+         (chat-w (- width roster-w))  ; total space after roster (includes participants)
          (input-y 1)
          (status-y 2)
          (chat-y 3)
@@ -54,48 +54,49 @@
                          :x 1 :y 1
                          :width roster-w :height height))
     ;; Participants panel (right side, from chat-y to bottom)
-    (setf (layout-participants layout)
-          (make-instance 'participants-panel
-                         :x (- width participants-w -1) :y chat-y
-                         :width participants-w :height chat-h))
-    ;; Buffer bar at bottom
-    (setf (layout-buffer-bar layout)
-          (make-instance 'buffer-bar
-                         :x chat-x :y height
-                         :width (- width roster-w) :height 1))
-    ;; Chat panel(s) based on split mode
-    (cond
-      ;; Horizontal split: two panes side by side
-      ((eq split :horizontal)
-       (let* ((pane-w (floor (- chat-w 1) 2))
-              (pane2-x (+ chat-x pane-w 1)))
+    (let ((chat-area-w (- chat-w participants-w)))
+      (setf (layout-participants layout)
+            (make-instance 'participants-panel
+                           :x (+ chat-x chat-area-w) :y chat-y
+                           :width participants-w :height chat-h))
+      ;; Buffer bar at bottom
+      (setf (layout-buffer-bar layout)
+            (make-instance 'buffer-bar
+                           :x chat-x :y height
+                           :width chat-w :height 1))
+      ;; Chat panel(s) based on split mode
+      (cond
+        ;; Horizontal split: two panes side by side
+        ((eq split :horizontal)
+         (let* ((pane-w (floor (- chat-area-w 1) 2))
+                (pane2-x (+ chat-x pane-w 1)))
+           (setf (layout-chat-a layout)
+                 (make-instance 'chat-panel
+                                :x chat-x :y chat-y
+                                :width pane-w :height chat-h))
+           (setf (layout-chat-b layout)
+                 (make-instance 'chat-panel
+                                :x pane2-x :y chat-y
+                                :width pane-w :height chat-h))))
+        ;; Vertical split: two panes stacked
+        ((eq split :vertical)
+         (let* ((pane-h (floor (- chat-h 1) 2))
+                (pane2-y (+ chat-y pane-h 1)))
+           (setf (layout-chat-a layout)
+                 (make-instance 'chat-panel
+                                :x chat-x :y chat-y
+                                :width chat-area-w :height pane-h))
+           (setf (layout-chat-b layout)
+                 (make-instance 'chat-panel
+                                :x chat-x :y pane2-y
+                                :width chat-area-w :height pane-h))))
+        ;; Single pane
+        (t
          (setf (layout-chat-a layout)
                (make-instance 'chat-panel
                               :x chat-x :y chat-y
-                              :width pane-w :height chat-h))
-         (setf (layout-chat-b layout)
-               (make-instance 'chat-panel
-                              :x pane2-x :y chat-y
-                              :width pane-w :height chat-h))))
-      ;; Vertical split: two panes stacked
-      ((eq split :vertical)
-       (let* ((pane-h (floor (- chat-h 1) 2))
-              (pane2-y (+ chat-y pane-h 1)))
-         (setf (layout-chat-a layout)
-               (make-instance 'chat-panel
-                              :x chat-x :y chat-y
-                              :width (- chat-w participants-w) :height pane-h))
-         (setf (layout-chat-b layout)
-               (make-instance 'chat-panel
-                              :x chat-x :y pane2-y
-                              :width (- chat-w participants-w) :height pane-h))))
-      ;; Single pane
-      (t
-       (setf (layout-chat-a layout)
-             (make-instance 'chat-panel
-                            :x chat-x :y chat-y
-                            :width (- chat-w participants-w) :height chat-h))
-       (setf (layout-chat-b layout) nil)))
+                              :width chat-area-w :height chat-h))
+         (setf (layout-chat-b layout) nil))))
     layout))
 
 (defun layout-render-all (layout)

@@ -79,6 +79,13 @@
       (setf (app-active-buffer app)
             (mod (+ idx (if (eq direction :next) 1 -1)) count)))))
 
+(defun app-switch-to-buffer (app buf)
+  "Switch active buffer to BUF."
+  (loop for i from 0 below (fill-pointer (app-buffers app))
+        when (eq (aref (app-buffers app) i) buf)
+        do (setf (app-active-buffer app) i)
+           (return)))
+
 (defun app-dm-buffers (app)
   "Get list of DM buffers."
   (loop for i from 0 below (fill-pointer (app-buffers app))
@@ -317,18 +324,65 @@
        (setf (app-running-p app) nil))
       ((string= cmd "/join")
        (when args
-         ;; TODO: XMPP MUC join
-         (let ((buf (make-buffer :name args
-                                 :display-name (strip-muc-name args)
-                                 :type :muc)))
-           (app-add-buffer app buf))))
+         (let ((conn (app-first-connection app))
+               (jid (string-trim " " args)))
+           (when conn
+             (handler-case
+                 (progn
+                   (xmpp-join-muc conn jid)
+                   (let ((buf (app-find-or-create-buffer app jid
+                                :type :muc
+                                :display-name (strip-muc-name jid))))
+                     (xmpp-query-mam conn jid :max 50)
+                     (app-switch-to-buffer app buf)
+                     (buffer-add-message buf
+                       (make-message :text (format nil "Joined ~A" jid) :level :system))))
+               (error (e)
+                 (let ((buf (app-current-buffer app)))
+                   (when buf
+                     (buffer-add-message buf
+                       (make-message :text (format nil "Join error: ~A" e) :level :error))))))))))
+      ((string= cmd "/part")
+       (let ((buf (app-current-buffer app))
+             (conn (app-first-connection app)))
+         (when (and buf conn (eq (buffer-type buf) :muc))
+           (handler-case
+               (progn
+                 (xmpp-leave-muc conn (buffer-name buf))
+                 (buffer-add-message buf
+                   (make-message :text (format nil "Left ~A" (buffer-name buf)) :level :system)))
+             (error (e)
+               (buffer-add-message buf
+                 (make-message :text (format nil "Part error: ~A" e) :level :error)))))))
+      ((string= cmd "/add")
+       (when args
+         (let ((conn (app-first-connection app))
+               (jid (string-trim " " args)))
+           (when conn
+             (handler-case
+                 (progn
+                   (xmpp-add-contact conn jid)
+                   (setf (gethash jid (app-contacts app))
+                         (make-contact :jid jid))
+                   (let ((buf (app-find-or-create-buffer app jid
+                                :type :dm :display-name jid)))
+                     (app-switch-to-buffer app buf)
+                     (buffer-add-message buf
+                       (make-message :text (format nil "Added ~A to contacts" jid) :level :system))))
+               (error (e)
+                 (let ((buf (app-current-buffer app)))
+                   (when buf
+                     (buffer-add-message buf
+                       (make-message :text (format nil "Add error: ~A" e) :level :error))))))))))
       ((string= cmd "/msg")
        (when args
          (let* ((space (position #\Space args))
-                (jid (if space (subseq args 0 space) args)))
-           (unless (find jid (coerce (app-buffers app) 'list)
-                         :key #'buffer-name :test #'string=)
-             (app-add-buffer app (make-buffer :name jid :type :dm))))))
+                (jid (if space (subseq args 0 space) args))
+                (msg (when space (string-trim " " (subseq args space)))))
+           (let ((buf (app-find-or-create-buffer app jid :type :dm :display-name jid)))
+             (app-switch-to-buffer app buf)
+             (when (and msg (> (length msg) 0))
+               (app-send-message app msg))))))
       ((string= cmd "/omemo")
        (let ((buf (app-current-buffer app)))
          (when (and buf (not (eq (buffer-type buf) :system)))
@@ -351,7 +405,7 @@
        (let ((buf (app-current-buffer app)))
          (when buf
            (buffer-add-message buf
-             (make-message :text "Commands: /join <room> /msg <jid> /omemo /quit /help"
+             (make-message :text "Commands: /join <room> /part /add <jid> /msg <jid> [text] /omemo /quit /help"
                            :level :system))))))))
 
 (defun app-send-message (app text)
@@ -371,7 +425,8 @@
                  (xmpp-send-groupchat conn jid text))
                 ;; OMEMO-encrypted DM
                 (use-omemo
-                 (let ((encrypted-el (app-build-omemo-encrypted jid text)))
+                 (let* ((our-jid (bare-jid (conn-bound-jid conn)))
+                        (encrypted-el (app-build-omemo-encrypted jid text our-jid)))
                    (if encrypted-el
                        (xmpp-send-omemo-message conn jid encrypted-el)
                        (progn
@@ -634,9 +689,25 @@
                      (incf count)
                      (setf (gethash jid (app-contacts app))
                            (make-contact :jid jid :nick name))
-                     ;; Create DM buffer for each roster contact
-                     (app-find-or-create-buffer app jid
-                       :type :dm :display-name (or name jid))))))
+                     ;; Classify: #channel%server@gateway = MUC, everything else = DM
+                     (let* ((at-pos (position #\@ jid))
+                            (local-part (if at-pos (subseq jid 0 at-pos) jid))
+                            (is-muc (or (and (search "#" local-part)
+                                             (search "%" local-part))
+                                        (search "conference" jid))))
+                       (if is-muc
+                           (handler-case
+                               (when conn
+                                 (debug-log "Roster: joining MUC ~a" jid)
+                                 (xmpp-join-muc conn jid)
+                                 (app-find-or-create-buffer app jid
+                                   :type :muc
+                                   :display-name (or name (strip-muc-name jid)))
+                                 (xmpp-query-mam conn jid :max 50))
+                             (error (e)
+                               (debug-log "Roster MUC join error for ~a: ~a" jid e)))
+                           (app-find-or-create-buffer app jid
+                             :type :dm :display-name (or name jid))))))))
              (debug-log "Roster: ~a contacts loaded" count)))
          ;; Handle roster push (type=set)
          (when (and (string= type- "set")
@@ -698,10 +769,19 @@
                           (when from-jid
                             (cache-device-list from-jid device-ids)
                             (debug-log "PubSub: cached device list for ~a: ~a" from-jid device-ids)
+                            ;; If this is OUR device list, merge our ID and republish
+                            (when (and conn *omemo-device-id*
+                                       (string= from-jid (bare-jid (conn-bound-jid conn)))
+                                       (not (member *omemo-device-id* device-ids)))
+                              (debug-log "OMEMO: our device ~a not in list, republishing merged" *omemo-device-id*)
+                              (handler-case
+                                  (xmpp-publish-omemo-devicelist conn *omemo-device-id* device-ids)
+                                (error (e) (debug-log "OMEMO: republish error: ~a" e))))
                             ;; Auto-fetch bundles for each device
                             (when conn
                               (dolist (did device-ids)
-                                (unless (signal-has-session-p from-jid did)
+                                (unless (or (eql did *omemo-device-id*)
+                                            (signal-has-session-p from-jid did))
                                   (debug-log "Fetching bundle for ~a/~a" from-jid did)
                                   (handler-case
                                       (xmpp-fetch-omemo-bundle conn from-jid did)
@@ -715,6 +795,14 @@
                       (debug-log "PubSub: bundle response for ~a/~a" from-jid device-id)
                       (when from-jid
                         (app-process-omemo-bundle app from-jid device-id items-el)))))))))
+         ;; Handle IQ errors for device list fetch (node may not exist yet)
+         (when (and (string= type- "error") conn *omemo-device-id*)
+           (let ((id (stanza-id stanza)))
+             (when (and id (search "pep-fetch" id))
+               (debug-log "OMEMO: device list fetch error (node may not exist), publishing just our ID")
+               (handler-case
+                   (xmpp-publish-omemo-devicelist conn *omemo-device-id* nil)
+                 (error (e) (debug-log "OMEMO: fallback publish error: ~a" e))))))
          ;; Handle MAM results (messages wrapped in <result> inside <message>)
          )))
     (t nil)))
@@ -785,8 +873,9 @@
       (debug-log "omemo-bundle-xml-element error: ~a" e)
       nil)))
 
-(defun app-build-omemo-encrypted (to-jid plaintext)
+(defun app-build-omemo-encrypted (to-jid plaintext &optional our-jid)
   "Build an OMEMO <encrypted> xml-element for sending to TO-JID.
+   Also encrypts for our own other devices (OUR-JID) so they can read sent messages.
    Returns xml-element or NIL on failure."
   (handler-case
       (let ((device-ids (get-cached-device-list to-jid)))
@@ -809,6 +898,22 @@
                           key-elements))
                 (error (e)
                   (debug-log "OMEMO: can't encrypt to ~a/~a: ~a" to-jid device-id e))))
+            ;; Also encrypt for our own other devices
+            (when our-jid
+              (let ((own-devices (get-cached-device-list our-jid)))
+                (dolist (device-id own-devices)
+                  (unless (= device-id *omemo-device-id*)
+                    (handler-case
+                        (multiple-value-bind (encrypted-key msg-type)
+                            (signal-session-encrypt our-jid device-id key-material)
+                          (push (make-xml-element "key"
+                                  :attributes `(("rid" . ,(princ-to-string device-id))
+                                                ,@(when (= msg-type +ciphertext-prekey-type+)
+                                                    '(("prekey" . "true"))))
+                                  :text (bytes-to-base64 encrypted-key))
+                                key-elements))
+                      (error (e)
+                        (debug-log "OMEMO: can't encrypt to own ~a/~a: ~a" our-jid device-id e)))))))
             (unless key-elements
               (debug-log "OMEMO: no devices could be encrypted to")
               (return-from app-build-omemo-encrypted nil))
@@ -1010,15 +1115,24 @@
             (progn
               (omemo-init)
               (debug-log "OMEMO initialized, device-id=~a" *omemo-device-id*)
-              ;; Publish device list and bundle
               (when *omemo-device-id*
-                (xmpp-publish-omemo-devicelist conn *omemo-device-id*)
+                ;; Publish bundle (this is safe - doesn't overwrite anything)
                 (let ((bundle-xml (omemo-bundle-xml-element)))
                   (when bundle-xml
                     (xmpp-publish-omemo-bundle conn *omemo-device-id* bundle-xml)))
-                (debug-log "OMEMO device list and bundle published")))
+                ;; Fetch our own device list - the async PubSub handler will:
+                ;; 1. Cache the existing device IDs
+                ;; 2. Merge our ID and republish the device list
+                (let ((our-jid (bare-jid (conn-bound-jid conn))))
+                  (when our-jid
+                    (xmpp-fetch-omemo-devicelist conn our-jid)
+                    (debug-log "OMEMO: requested own device list for ~a (will merge async)" our-jid)))
+                (debug-log "OMEMO bundle published, device list merge pending")))
           (error (e)
             (debug-log "OMEMO init error (non-fatal): ~a" e)))
+
+        ;; Final splash step - mark OMEMO done
+        (app-splash-step app "Ready")
 
         ;; Mark running BEFORE starting receive thread
         (setf (app-running-p app) t)
@@ -1026,7 +1140,10 @@
         ;; Start receive thread
         (app-start-receive-thread app conn))
 
-      (sleep 0.3))
+      (sleep 0.3)
+      ;; Clear screen immediately after sleep to prevent flash
+      (clear-screen)
+      (force-output *terminal-io*))
 
     ;; Create system buffer
     (app-add-buffer app (make-buffer :name "*system*" :display-name "*system*" :type :system))

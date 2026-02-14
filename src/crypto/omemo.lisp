@@ -150,8 +150,10 @@
 ;;; OMEMO message encryption (full flow)
 ;;; ============================================================
 
-(defun omemo-encrypt-message (to-jid plaintext)
+(defun omemo-encrypt-message (to-jid plaintext &optional our-jid)
   "Encrypt a message for TO-JID using OMEMO.
+   Also encrypts for our own devices so other clients can read sent messages.
+   OUR-JID is our bare JID for looking up own device list.
    Returns XML string for the OMEMO message stanza body."
   (let ((device-ids (get-cached-device-list to-jid)))
     (unless device-ids
@@ -171,8 +173,21 @@
                         (if (= msg-type +ciphertext-prekey-type+) " prekey='true'" "")
                         (bytes-to-base64 encrypted-key)))
             (error (e)
-              ;; Skip devices we can't encrypt to
-              (format *error-output* "OMEMO: can't encrypt to ~A/~A: ~A~%" to-jid device-id e))))
+              (debug-log "OMEMO: can't encrypt to ~A/~A: ~A" to-jid device-id e))))
+        ;; Also encrypt for our own other devices
+        (when our-jid
+          (let ((own-devices (get-cached-device-list our-jid)))
+            (dolist (device-id own-devices)
+              (unless (= device-id *omemo-device-id*)  ; skip ourselves
+                (handler-case
+                    (multiple-value-bind (encrypted-key msg-type)
+                        (signal-session-encrypt our-jid device-id key-material)
+                      (format s "<key rid='~A'~A>~A</key>"
+                              device-id
+                              (if (= msg-type +ciphertext-prekey-type+) " prekey='true'" "")
+                              (bytes-to-base64 encrypted-key)))
+                  (error (e)
+                    (debug-log "OMEMO: can't encrypt to own ~A/~A: ~A" our-jid device-id e)))))))
         (format s "<iv>~A</iv>" (bytes-to-base64 iv))
         (format s "</header>")
         (format s "<payload>~A</payload>" (bytes-to-base64 ciphertext))
