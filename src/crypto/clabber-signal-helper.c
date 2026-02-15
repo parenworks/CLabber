@@ -9,6 +9,8 @@
  *          -lsignal-protocol-c -lssl -lcrypto
  */
 
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -27,7 +27,7 @@
   (t (:default "libsignal-protocol-c")))
 
 (cffi:define-foreign-library libclabber-signal
-  (:unix "libclabber-signal.so")
+  (:unix (:or "/usr/local/lib/libclabber-signal.so" "libclabber-signal.so"))
   (t (:default "libclabber-signal")))
 
 ;;; ============================================================
