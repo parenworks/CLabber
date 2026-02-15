@@ -54,7 +54,9 @@
    (emoji-index :initform 0 :accessor app-emoji-index
                 :documentation "Selected index in emoji matches")
    (emoji-colon-pos :initform 0 :accessor app-emoji-colon-pos
-                    :documentation "Position of the : that started emoji search"))
+                    :documentation "Position of the : that started emoji search")
+   (last-ping-time :initform 0 :accessor app-last-ping-time
+                   :documentation "Universal time of last XMPP keepalive ping"))
   (:documentation "Main CLabber application state"))
 
 (defun make-app ()
@@ -1808,6 +1810,17 @@
              (when key
                (unless (app-handle-input app key)
                  (setf (app-running-p app) nil))))
+           ;; XMPP keepalive ping (XEP-0199) every 60 seconds
+           (let ((now (get-universal-time)))
+             (when (> (- now (app-last-ping-time app)) 60)
+               (let ((conn (app-first-connection app)))
+                 (when (and conn (conn-connected-p conn))
+                   (handler-case
+                       (progn
+                         (xmpp-send-ping conn)
+                         (setf (app-last-ping-time app) now))
+                     (error (e)
+                       (debug-log "Ping error: ~a" e)))))))
            ;; Re-render (catch errors to avoid spewing to terminal)
            (handler-case (app-render app)
              (error (e)

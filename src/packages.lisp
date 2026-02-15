@@ -335,6 +335,7 @@
            #:xmpp-get-roster
            #:xmpp-get-bookmarks
            #:xmpp-enable-carbons
+           #:xmpp-send-ping
            #:xmpp-disco-info
            #:xmpp-query-mam
            #:xmpp-accept-subscription

@@ -203,6 +203,21 @@
   (xmpp-send-presence conn :to jid :type "subscribed"))
 
 ;;; ============================================================
+;;; XMPP Ping / Keepalive (XEP-0199)
+;;; ============================================================
+
+(defun xmpp-send-ping (conn)
+  "Send an XMPP ping to the server to keep the connection alive."
+  (let* ((jid (bare-jid (or (conn-bound-jid conn) (conn-jid conn))))
+         (server (when jid
+                   (let ((at (position #\@ jid)))
+                     (when at (subseq jid (1+ at))))))
+         (ping-el (make-xml-element "ping" :namespace "urn:xmpp:ping"))
+         (iq (make-iq-stanza "get" :to server :query ping-el
+                             :id (format nil "ping-~a" (random 100000)))))
+    (xmpp-send conn iq)))
+
+;;; ============================================================
 ;;; Message Carbons (XEP-0280)
 ;;; ============================================================
 
