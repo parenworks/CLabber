@@ -59,8 +59,28 @@
 ;;; OMEMO initialization
 ;;; ============================================================
 
+(defun omemo-prekeys-exist-p ()
+  "Check if prekey files already exist on disk."
+  (let ((prekeys-dir (merge-pathnames "signal/prekeys/"
+                                       (merge-pathnames ".config/clabber/"
+                                                        (user-homedir-pathname)))))
+    (and (probe-file prekeys-dir)
+         (directory (merge-pathnames "*.bin" prekeys-dir)))))
+
+(defun omemo-signed-prekey-exists-p ()
+  "Check if signed prekey files already exist on disk."
+  (let ((spk-dir (merge-pathnames "signal/signed_prekeys/"
+                                   (merge-pathnames ".config/clabber/"
+                                                    (user-homedir-pathname)))))
+    (and (probe-file spk-dir)
+         (directory (merge-pathnames "*.bin" spk-dir)))))
+
 (defun omemo-init ()
-  "Initialize OMEMO: load or generate identity, prekeys, signed prekey."
+  "Initialize OMEMO: load or generate identity, prekeys, signed prekey.
+Only generates new keys if they don't already exist on disk, preserving
+existing sessions across restarts."
+  ;; Clear any stale state from SBCL image
+  (clrhash *device-list-cache*)
   (signal-init)
   (unless (signal-has-identity-p)
     ;; Generate new identity (saves to disk)
@@ -68,9 +88,11 @@
   (let ((reg-id (signal-get-registration-id)))
     (setf *omemo-registration-id* reg-id)
     (setf *omemo-device-id* reg-id))
-  ;; Always (re)generate prekeys and signed prekey so they're available
-  (signal-generate-prekeys 1 100)
-  (signal-generate-signed-prekey 1)
+  ;; Only generate prekeys if they don't exist on disk
+  (unless (omemo-prekeys-exist-p)
+    (signal-generate-prekeys 1 100))
+  (unless (omemo-signed-prekey-exists-p)
+    (signal-generate-signed-prekey 1))
   (values *omemo-device-id* (signal-get-identity-public)))
 
 ;;; ============================================================

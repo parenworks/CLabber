@@ -18,9 +18,10 @@
 #include <time.h>
 
 #include <openssl/rand.h>
-#include <openssl/hmac.h>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
+#include <openssl/core_names.h>
+#include <openssl/params.h>
 
 #include <signal/signal_protocol.h>
 #include <signal/signal_protocol_types.h>
@@ -39,7 +40,7 @@ static signal_context *g_context = NULL;
 static signal_protocol_store_context *g_store_context = NULL;
 static ratchet_identity_key_pair *g_identity_key_pair = NULL;
 static uint32_t g_registration_id = 0;
-static char g_store_path[4096] = {0};
+static char g_store_path[8192] = {0};
 
 /* ============================================================
  * Utility: file I/O for store persistence
@@ -50,31 +51,31 @@ static void ensure_dir(const char *path) {
 }
 
 static char *make_path(const char *dir, const char *file) {
-    static char buf[4096];
+    static char buf[8192];
     snprintf(buf, sizeof(buf), "%s/%s", dir, file);
     return buf;
 }
 
 static char *make_session_path(const char *name, int device_id) {
-    static char buf[4096];
+    static char buf[8192];
     snprintf(buf, sizeof(buf), "%s/sessions/%s_%d.bin", g_store_path, name, device_id);
     return buf;
 }
 
 static char *make_prekey_path(uint32_t id) {
-    static char buf[4096];
+    static char buf[8192];
     snprintf(buf, sizeof(buf), "%s/prekeys/%u.bin", g_store_path, id);
     return buf;
 }
 
 static char *make_signed_prekey_path(uint32_t id) {
-    static char buf[4096];
+    static char buf[8192];
     snprintf(buf, sizeof(buf), "%s/signed_prekeys/%u.bin", g_store_path, id);
     return buf;
 }
 
 static char *make_identity_path(const char *name, int device_id) {
-    static char buf[4096];
+    static char buf[8192];
     snprintf(buf, sizeof(buf), "%s/identities/%s_%d.bin", g_store_path, name, device_id);
     return buf;
 }
@@ -122,34 +123,41 @@ static int openssl_random(uint8_t *data, size_t len, void *user_data) {
 
 static int openssl_hmac_sha256_init(void **ctx, const uint8_t *key, size_t key_len, void *user_data) {
     (void)user_data;
-    HMAC_CTX *hmac_ctx = HMAC_CTX_new();
-    if (!hmac_ctx) return SG_ERR_NOMEM;
-    if (HMAC_Init_ex(hmac_ctx, key, (int)key_len, EVP_sha256(), NULL) != 1) {
-        HMAC_CTX_free(hmac_ctx);
+    EVP_MAC *mac = EVP_MAC_fetch(NULL, "HMAC", NULL);
+    if (!mac) return SG_ERR_UNKNOWN;
+    EVP_MAC_CTX *mac_ctx = EVP_MAC_CTX_new(mac);
+    EVP_MAC_free(mac);
+    if (!mac_ctx) return SG_ERR_NOMEM;
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, "SHA256", 0),
+        OSSL_PARAM_construct_end()
+    };
+    if (EVP_MAC_init(mac_ctx, key, key_len, params) != 1) {
+        EVP_MAC_CTX_free(mac_ctx);
         return SG_ERR_UNKNOWN;
     }
-    *ctx = hmac_ctx;
+    *ctx = mac_ctx;
     return 0;
 }
 
 static int openssl_hmac_sha256_update(void *ctx, const uint8_t *data, size_t data_len, void *user_data) {
     (void)user_data;
-    if (HMAC_Update((HMAC_CTX *)ctx, data, data_len) != 1) return SG_ERR_UNKNOWN;
+    if (EVP_MAC_update((EVP_MAC_CTX *)ctx, data, data_len) != 1) return SG_ERR_UNKNOWN;
     return 0;
 }
 
 static int openssl_hmac_sha256_final(void *ctx, signal_buffer **output, void *user_data) {
     (void)user_data;
     unsigned char md[EVP_MAX_MD_SIZE];
-    unsigned int md_len = 0;
-    if (HMAC_Final((HMAC_CTX *)ctx, md, &md_len) != 1) return SG_ERR_UNKNOWN;
+    size_t md_len = 0;
+    if (EVP_MAC_final((EVP_MAC_CTX *)ctx, md, &md_len, sizeof(md)) != 1) return SG_ERR_UNKNOWN;
     *output = signal_buffer_create(md, md_len);
     return *output ? 0 : SG_ERR_NOMEM;
 }
 
 static void openssl_hmac_sha256_cleanup(void *ctx, void *user_data) {
     (void)user_data;
-    if (ctx) HMAC_CTX_free((HMAC_CTX *)ctx);
+    if (ctx) EVP_MAC_CTX_free((EVP_MAC_CTX *)ctx);
 }
 
 static int openssl_sha512_init(void **ctx, void *user_data) {
@@ -191,7 +199,7 @@ static int openssl_encrypt(signal_buffer **output, int cipher,
         const uint8_t *iv, size_t iv_len,
         const uint8_t *plaintext, size_t plaintext_len,
         void *user_data) {
-    (void)user_data;
+    (void)user_data; (void)iv_len;
     const EVP_CIPHER *evp_cipher = NULL;
     int do_padding = 0;
 
@@ -240,7 +248,7 @@ static int openssl_decrypt(signal_buffer **output, int cipher,
         const uint8_t *iv, size_t iv_len,
         const uint8_t *ciphertext, size_t ciphertext_len,
         void *user_data) {
-    (void)user_data;
+    (void)user_data; (void)iv_len;
     const EVP_CIPHER *evp_cipher = NULL;
     int do_padding = 0;
 
@@ -310,7 +318,7 @@ static int ss_store_session(const signal_protocol_address *address,
         uint8_t *record, size_t record_len,
         uint8_t *user_record, size_t user_record_len, void *user_data) {
     (void)user_data; (void)user_record; (void)user_record_len;
-    char sessions_dir[4096];
+    char sessions_dir[8192];
     snprintf(sessions_dir, sizeof(sessions_dir), "%s/sessions", g_store_path);
     ensure_dir(sessions_dir);
     char *path = make_session_path(address->name, address->device_id);
@@ -350,7 +358,7 @@ static int pks_load(signal_buffer **record, uint32_t pre_key_id, void *user_data
 
 static int pks_store(uint32_t pre_key_id, uint8_t *record, size_t record_len, void *user_data) {
     (void)user_data;
-    char prekeys_dir[4096];
+    char prekeys_dir[8192];
     snprintf(prekeys_dir, sizeof(prekeys_dir), "%s/prekeys", g_store_path);
     ensure_dir(prekeys_dir);
     return file_write(make_prekey_path(pre_key_id), record, record_len);
@@ -385,7 +393,7 @@ static int spks_load(signal_buffer **record, uint32_t signed_pre_key_id, void *u
 
 static int spks_store(uint32_t signed_pre_key_id, uint8_t *record, size_t record_len, void *user_data) {
     (void)user_data;
-    char dir[4096];
+    char dir[8192];
     snprintf(dir, sizeof(dir), "%s/signed_prekeys", g_store_path);
     ensure_dir(dir);
     return file_write(make_signed_prekey_path(signed_pre_key_id), record, record_len);
@@ -433,7 +441,7 @@ static int iks_get_local_registration_id(void *user_data, uint32_t *registration
 static int iks_save_identity(const signal_protocol_address *address,
         uint8_t *key_data, size_t key_len, void *user_data) {
     (void)user_data;
-    char dir[4096];
+    char dir[8192];
     snprintf(dir, sizeof(dir), "%s/identities", g_store_path);
     ensure_dir(dir);
     if (key_data && key_len > 0) {
