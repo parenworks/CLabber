@@ -13,14 +13,13 @@
                #:ironclad
                #:babel
                #:cl-base64
-               #:cffi)
+               #:cffi
+               #:clansi)
   :serial t
   :components
   ((:module "src"
     :components
     ((:file "packages")
-     (:file "ansi")
-     (:file "terminal")
      (:file "theme")
      (:file "model")
      (:file "config")

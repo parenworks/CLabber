@@ -56,11 +56,76 @@
    (emoji-colon-pos :initform 0 :accessor app-emoji-colon-pos
                     :documentation "Position of the : that started emoji search")
    (last-ping-time :initform 0 :accessor app-last-ping-time
-                   :documentation "Universal time of last XMPP keepalive ping"))
+                   :documentation "Universal time of last XMPP keepalive ping")
+   ;; Mouse text selection state
+   (selection-active-p :initform nil :accessor app-selection-active-p
+                       :documentation "Whether mouse text selection is in progress")
+   (selection-start-x :initform 0 :accessor app-selection-start-x)
+   (selection-start-y :initform 0 :accessor app-selection-start-y)
+   (selection-end-x :initform 0 :accessor app-selection-end-x)
+   (selection-end-y :initform 0 :accessor app-selection-end-y)
+   ;; Screen text map for mouse selection (row -> string of visible text)
+   (screen-text-map :initform (make-hash-table) :accessor app-screen-text-map
+                    :documentation "Maps row number to displayed text for copy"))
   (:documentation "Main CLabber application state"))
 
 (defun make-app ()
   (make-instance 'application))
+
+(defun url-at-position (app row col)
+  "Check if there's a URL at terminal position (row, col).
+   Returns the URL string if found, NIL otherwise."
+  (let ((entry (gethash row (app-screen-text-map app))))
+    (when entry
+      (let* ((col-offset (car entry))
+             (text (cdr entry))
+             (idx (- col col-offset)))
+        (when (and (>= idx 0) (< idx (length text)))
+          ;; Check if position falls within a URL
+          (let ((urls (find-urls text)))
+            (dolist (url-info urls)
+              (destructuring-bind (start end url) url-info
+                (declare (ignore url))
+                (when (and (>= idx start) (< idx end))
+                  (return (subseq text start end)))))))))))
+
+;;; copy-to-clipboard, open-url, find-urls, princ-with-urls are provided by CLansi
+
+(defun extract-selection-text (app y1 x1 y2 x2)
+  "Extract selected text from screen text map between (y1,x1) and (y2,x2).
+   Screen text map entries are (start-col . text) cons cells."
+  (let ((map (app-screen-text-map app))
+        (lines nil))
+    ;; Ensure y1 <= y2
+    (when (> y1 y2) (rotatef y1 y2) (rotatef x1 x2))
+    (when (and (= y1 y2) (> x1 x2)) (rotatef x1 x2))
+    (loop for row from y1 to y2
+          for entry = (gethash row map)
+          when entry do
+            (let* ((col-offset (car entry))
+                   (text (cdr entry))
+                   (len (length text)))
+              ;; Map mouse X (terminal column) to string index
+              ;; by subtracting the column where text starts
+              (cond
+                ((= y1 y2)
+                 ;; Single line selection
+                 (let ((s (max 0 (min (- x1 col-offset) len)))
+                       (e (max 0 (min (- x2 col-offset) len))))
+                   (when (> e s)
+                     (push (subseq text s e) lines))))
+                ((= row y1)
+                 ;; First line: from start-x to end
+                 (let ((s (max 0 (min (- x1 col-offset) len))))
+                   (push (subseq text s) lines)))
+                ((= row y2)
+                 ;; Last line: from start to end-x
+                 (let ((e (max 0 (min (- x2 col-offset) len))))
+                   (push (subseq text 0 e) lines)))
+                (t
+                 ;; Middle lines: full line
+                 (push text lines)))))
+    (format nil "~{~A~^~%~}" (nreverse lines))))
 
 (defun app-first-connection (app)
   "Get the first (primary) XMPP connection."
@@ -152,7 +217,10 @@
 (defun app-render (app)
   "Render the full UI."
   (let ((ly (app-layout app))
-        (buf (app-current-buffer app)))
+        (buf (app-current-buffer app))
+        (*screen-text-map* (app-screen-text-map app)))
+    ;; Clear screen text map for fresh population
+    (clrhash *screen-text-map*)
     ;; Active buffer is always "read"
     (when buf
       (setf (buffer-unread-count buf) 0
@@ -270,6 +338,26 @@
                    (emit-bg (theme-bg theme) *terminal-io*)
                    (princ "│" *terminal-io*))
           (reset))))
+    ;; Render mouse selection highlight with inverse video
+    (when (app-selection-active-p app)
+      (let* ((y1 (app-selection-start-y app))
+             (x1 (app-selection-start-x app))
+             (y2 (app-selection-end-y app))
+             (x2 (app-selection-end-x app))
+             (w (app-width app)))
+        ;; Normalize so y1 <= y2
+        (when (or (> y1 y2) (and (= y1 y2) (> x1 x2)))
+          (rotatef y1 y2) (rotatef x1 x2))
+        (loop for row from y1 to (min y2 (app-height app))
+              do (let ((col-start (if (= row y1) x1 1))
+                       (col-end (if (= row y2) x2 w)))
+                   (when (> col-end col-start)
+                     (let ((span (min (- col-end col-start) (- w col-start -1))))
+                       (when (> span 0)
+                         (cursor-to row col-start)
+                         (inverse)
+                         (princ (make-string span :initial-element #\Space) *terminal-io*)
+                         (reset))))))))
     (end-sync-update)
     (force-output *terminal-io*)))
 
@@ -626,6 +714,66 @@
                        (xmpp-send-chat-state conn (buffer-name buf) "composing")
                        (setf (app-composing-sent-p app) t))
                    (error () nil)))))))
+       t)
+      ;; Mouse press: click URL or start text selection
+      ((eql (key-event-code key) +key-mouse+)
+       (let ((mx (key-event-mouse-x key))
+             (my (key-event-mouse-y key)))
+         (when (and mx my)
+           ;; Check if clicking on a URL - open it in browser
+           (let ((url (url-at-position app my mx)))
+             (if url
+                 (progn
+                   (open-url url)
+                   (let ((buf (app-current-buffer app)))
+                     (when buf
+                       (buffer-add-message buf
+                         (make-message :text (format nil "Opening ~A" url)
+                                       :level :system)))))
+                 ;; Not a URL - start text selection
+                 (setf (app-selection-active-p app) t
+                       (app-selection-start-x app) mx
+                       (app-selection-start-y app) my
+                       (app-selection-end-x app) mx
+                       (app-selection-end-y app) my)))))
+       t)
+      ;; Mouse drag: update selection end point
+      ((eql (key-event-code key) +key-mouse-drag+)
+       (let ((mx (key-event-mouse-x key))
+             (my (key-event-mouse-y key)))
+         (when (and mx my (app-selection-active-p app))
+           (setf (app-selection-end-x app) mx
+                 (app-selection-end-y app) my)))
+       t)
+      ;; Mouse release: copy selection to clipboard
+      ((eql (key-event-code key) +key-mouse-release+)
+       (when (app-selection-active-p app)
+         (let ((mx (key-event-mouse-x key))
+               (my (key-event-mouse-y key)))
+           (when (and mx my)
+             (setf (app-selection-end-x app) mx
+                   (app-selection-end-y app) my)))
+         (let ((text (extract-selection-text app
+                       (app-selection-start-y app) (app-selection-start-x app)
+                       (app-selection-end-y app) (app-selection-end-x app))))
+           (when (and text (> (length text) 0))
+             (copy-to-clipboard text)
+             (let ((buf (app-current-buffer app)))
+               (when buf
+                 (buffer-add-message buf
+                   (make-message :text (format nil "Copied ~D chars to clipboard"
+                                               (length text))
+                                 :level :system))))))
+         (setf (app-selection-active-p app) nil))
+       t)
+      ;; Terminal resize event
+      ((eql (key-event-code key) +key-resize+)
+       (let ((w (key-event-mouse-x key))
+             (h (key-event-mouse-y key)))
+         (when (and w h)
+           (setf (app-width app) w
+                 (app-height app) h)
+           (app-update-layout app)))
        t)
       ;; Unknown key - ignore
       (t t))))
@@ -1682,7 +1830,7 @@
 
 (defun app-run (app)
   "Main application loop."
-  (with-raw-terminal
+  (with-raw-terminal ()
     ;; Get terminal size
     (let ((size (terminal-size)))
       (setf (app-width app) (first size)
@@ -1799,9 +1947,16 @@
     ;; Ensure debug log is open for main thread too
     (open-debug-log)
 
+    ;; Enable SIGWINCH resize handling
+    (enable-resize-handling)
+
     ;; Main loop
     (unwind-protect
          (loop while (app-running-p app) do
+           ;; Check for terminal resize via SIGWINCH
+           (let ((resize-key (poll-resize)))
+             (when resize-key
+               (app-handle-input app resize-key)))
            ;; Process XMPP events from receive thread
            (handler-case (app-process-events app)
              (error (e) (debug-log "Main loop event error: ~a" e)))
@@ -1826,6 +1981,7 @@
              (error (e)
                (debug-log "Render error: ~a" e))))
       ;; Cleanup
+      (disable-resize-handling)
       (setf (app-running-p app) nil)
       (let ((conn (app-first-connection app)))
         (when conn

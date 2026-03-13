@@ -1,130 +1,10 @@
 ;;;; packages.lisp - Package definitions for CLabber
 ;;;; XMPP Chat Client - Pure ANSI Terminal UI
 
-(defpackage #:clabber.ansi
-  (:use #:cl)
-  (:export ;; Color classes
-           #:color
-           #:indexed-color
-           #:rgb-color
-           #:named-color
-           #:color-index
-           #:color-red
-           #:color-green
-           #:color-blue
-           #:color-name
-           #:make-indexed-color
-           #:make-rgb-color
-           #:make-named-color
-           #:lookup-color
-           #:register-color
-           #:emit-fg
-           #:emit-bg
-           ;; Style class
-           #:text-style
-           #:make-style
-           #:style-fg
-           #:style-bg
-           #:style-bold-p
-           #:style-dim-p
-           #:style-italic-p
-           #:style-underline-p
-           #:style-inverse-p
-           #:emit-style
-           ;; Terminal class
-           #:terminal
-           #:terminal-stream
-           #:terminal-width
-           #:terminal-height
-           #:term-cursor-to
-           #:term-cursor-home
-           #:term-cursor-hide
-           #:term-cursor-show
-           #:term-clear-screen
-           #:term-clear-line
-           #:term-clear-to-end
-           #:term-reset
-           #:term-write
-           #:*terminal*
-           ;; Convenience functions
-           #:*escape*
-           #:cursor-to
-           #:cursor-home
-           #:cursor-up
-           #:cursor-down
-           #:cursor-forward
-           #:cursor-back
-           #:cursor-hide
-           #:cursor-show
-           #:clear-screen
-           #:clear-line
-           #:clear-to-end
-           #:begin-sync-update
-           #:end-sync-update
-           #:fg
-           #:bg
-           #:fg-rgb
-           #:bg-rgb
-           #:reset
-           #:bold
-           #:dim
-           #:italic
-           #:underline
-           #:inverse
-           #:color-code
-           #:with-style))
-
-(defpackage #:clabber.terminal
-  (:use #:cl #:clabber.ansi)
-  (:export ;; Key event class and accessors
-           #:key-event
-           #:make-key-event
-           #:key-event-char
-           #:key-event-code
-           #:key-event-ctrl-p
-           #:key-event-alt-p
-           ;; Key constants
-           #:+key-up+
-           #:+key-down+
-           #:+key-left+
-           #:+key-right+
-           #:+key-enter+
-           #:+key-escape+
-           #:+key-tab+
-           #:+key-backspace+
-           #:+key-delete+
-           #:+key-home+
-           #:+key-end+
-           #:+key-page-up+
-           #:+key-page-down+
-           #:+key-mouse+
-           ;; Terminal mode
-           #:terminal-mode
-           #:*terminal-mode*
-           #:enable-raw-mode
-           #:disable-raw-mode
-           #:query-size
-           #:terminal-size
-           ;; Screen management
-           #:enter-alternate-screen
-           #:leave-alternate-screen
-           #:enable-mouse-tracking
-           #:disable-mouse-tracking
-           #:with-raw-terminal
-           #:setup-terminal
-           #:restore-terminal
-           ;; Input
-           #:input-reader
-           #:*input-reader*
-           #:reader-open
-           #:reader-close
-           #:read-key-event
-           #:read-key
-           #:read-key-with-timeout
-           #:close-tty-stream))
+;;; clabber.ansi and clabber.terminal are replaced by the clansi library
 
 (defpackage #:clabber.theme
-  (:use #:cl #:clabber.ansi)
+  (:use #:cl #:clansi)
   (:export #:base-theme
            #:tokyo-night-theme
            #:*current-theme*
@@ -209,7 +89,7 @@
            #:strip-muc-name))
 
 (defpackage #:clabber.widgets
-  (:use #:cl #:clabber.ansi #:clabber.theme #:clabber.model)
+  (:use #:cl #:clansi #:clabber.theme #:clabber.model)
   (:export #:panel
            #:panel-x
            #:panel-y
@@ -244,6 +124,8 @@
            #:buffer-bar-buffers
            #:buffer-bar-active-index
            #:buffer-bar-rows-needed
+           ;; Screen text map for mouse selection
+           #:*screen-text-map*
            ;; Splash
            #:splash-screen
            #:render-splash
@@ -251,7 +133,7 @@
            #:splash-error))
 
 (defpackage #:clabber.layout
-  (:use #:cl #:clabber.ansi #:clabber.widgets)
+  (:use #:cl #:clansi #:clabber.widgets)
   (:export #:layout
            #:make-layout
            #:layout-compute
@@ -415,8 +297,7 @@
 
 (defpackage #:clabber
   (:use #:cl
-        #:clabber.ansi
-        #:clabber.terminal
+        #:clansi
         #:clabber.theme
         #:clabber.model
         #:clabber.widgets

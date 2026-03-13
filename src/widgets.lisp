@@ -3,6 +3,10 @@
 ;;; Widget System for CLabber UI
 ;;; Panels, input bar, status bar, buffer bar, splash screen
 
+;;; Screen text map for mouse text selection
+(defvar *screen-text-map* nil
+  "When bound to a hash-table, widgets populate it with (row -> text) for mouse selection.")
+
 ;;; Base panel class
 
 (defclass panel ()
@@ -154,47 +158,57 @@
                    (cursor-to row (+ x 1))
                    ;; Timestamp
                    (emit-fg (theme-timestamp theme) *terminal-io*)
-                   (multiple-value-bind (sec min hour)
-                       (decode-universal-time ts)
-                     (declare (ignore sec))
-                     (format *terminal-io* "[~2,'0D:~2,'0D] " hour min))
-                   (reset)
-                   ;; Nick
-                   (when nick
-                     (let ((nick-color (or lvl-color
-                                           (theme-nick-color theme nick))))
-                       (when nick-color (emit-fg nick-color *terminal-io*))
-                       (when (and (not lvl-color) (not (clabber.model:message-highlight-p msg)))
-                         (bold))
-                       (format *terminal-io* "~A" nick)
-                       (reset)
-                       ;; Show (edited) marker for corrected messages
-                       (when (clabber.model:message-edited-p msg)
-                         (emit-fg (theme-system-color theme) *terminal-io*)
-                         (princ " (edited)" *terminal-io*)
-                         (reset))
-                       (princ ": " *terminal-io*)))
-                   ;; Message text with word wrapping
-                   (when lvl-color (emit-fg lvl-color *terminal-io*))
-                   (when (clabber.model:message-highlight-p msg)
-                     (emit-fg (theme-mention-indicator theme) *terminal-io*)
-                     (bold))
-                   ;; First line of text
-                   (princ (first wrapped-lines) *terminal-io*)
-                   (reset)
-                   (incf row)
-                   ;; Continuation lines (indented under first letter of text)
-                   (dolist (line (rest wrapped-lines))
-                     (when (< row (+ y h -1))
-                       (cursor-to row (+ x 1))
-                       (dotimes (j prefix-len) (princ #\Space *terminal-io*))
-                       (when lvl-color (emit-fg lvl-color *terminal-io*))
-                       (when (clabber.model:message-highlight-p msg)
-                         (emit-fg (theme-mention-indicator theme) *terminal-io*)
-                         (bold))
-                       (princ line *terminal-io*)
-                       (reset)
-                       (incf row)))))
+                   (let ((ts-str (multiple-value-bind (sec min hour)
+                                     (decode-universal-time ts)
+                                   (declare (ignore sec))
+                                   (format nil "[~2,'0D:~2,'0D] " hour min))))
+                     (princ ts-str *terminal-io*)
+                     (reset)
+                     ;; Nick
+                     (when nick
+                       (let ((nick-color (or lvl-color
+                                             (theme-nick-color theme nick))))
+                         (when nick-color (emit-fg nick-color *terminal-io*))
+                         (when (and (not lvl-color) (not (clabber.model:message-highlight-p msg)))
+                           (bold))
+                         (format *terminal-io* "~A" nick)
+                         (reset)
+                         ;; Show (edited) marker for corrected messages
+                         (when (clabber.model:message-edited-p msg)
+                           (emit-fg (theme-system-color theme) *terminal-io*)
+                           (princ " (edited)" *terminal-io*)
+                           (reset))
+                         (princ ": " *terminal-io*)))
+                     ;; Message text with word wrapping
+                     (when lvl-color (emit-fg lvl-color *terminal-io*))
+                     (when (clabber.model:message-highlight-p msg)
+                       (emit-fg (theme-mention-indicator theme) *terminal-io*)
+                       (bold))
+                     ;; First line of text (with clickable URLs)
+                     (princ-with-urls (first wrapped-lines) *terminal-io*)
+                     (reset)
+                     ;; Store (start-col . text) for mouse selection
+                     (when *screen-text-map*
+                       (setf (gethash row *screen-text-map*)
+                             (cons (+ x 1)
+                                   (format nil "~a~@[~a: ~]~a" ts-str nick (first wrapped-lines)))))
+                     (incf row)
+                     ;; Continuation lines (indented under first letter of text)
+                     (dolist (line (rest wrapped-lines))
+                       (when (< row (+ y h -1))
+                         (cursor-to row (+ x 1))
+                         (dotimes (j prefix-len) (princ #\Space *terminal-io*))
+                         (when lvl-color (emit-fg lvl-color *terminal-io*))
+                         (when (clabber.model:message-highlight-p msg)
+                           (emit-fg (theme-mention-indicator theme) *terminal-io*)
+                           (bold))
+                         (princ-with-urls line *terminal-io*)
+                         (reset)
+                         ;; Store (start-col . text) for mouse selection
+                         (when *screen-text-map*
+                           (setf (gethash row *screen-text-map*)
+                                 (cons (+ x 1) line)))
+                         (incf row))))))
         ;; OMEMO indicator in top-right corner
         (when (clabber.model:buffer-omemo-p buf)
           (cursor-to y (- (+ x w) 4))
@@ -426,7 +440,7 @@
                              (subseq text (max 0 (- (length text) max-text)))
                              text)))
       (princ display-text *terminal-io*)
-      (clear-to-end))
+      (clear-to-eol))
     ;; Position cursor
     (let* ((prompt-len (length (theme-input-prompt theme)))
            (cursor-col (+ x prompt-len (min (input-bar-cursor-pos panel)
