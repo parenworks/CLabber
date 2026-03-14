@@ -14,7 +14,7 @@
                #:babel
                #:cl-base64
                #:cffi
-               #:clansi)
+               #:charmed)
   :serial t
   :components
   ((:module "src"

@@ -1,10 +1,10 @@
 ;;;; packages.lisp - Package definitions for CLabber
 ;;;; XMPP Chat Client - Pure ANSI Terminal UI
 
-;;; clabber.ansi and clabber.terminal are replaced by the clansi library
+;;; clabber.ansi and clabber.terminal are replaced by the charmed library
 
 (defpackage #:clabber.theme
-  (:use #:cl #:clansi)
+  (:use #:cl #:charmed)
   (:export #:base-theme
            #:tokyo-night-theme
            #:*current-theme*
@@ -89,7 +89,7 @@
            #:strip-muc-name))
 
 (defpackage #:clabber.widgets
-  (:use #:cl #:clansi #:clabber.theme #:clabber.model)
+  (:use #:cl #:charmed #:clabber.theme #:clabber.model)
   (:export #:panel
            #:panel-x
            #:panel-y
@@ -133,7 +133,7 @@
            #:splash-error))
 
 (defpackage #:clabber.layout
-  (:use #:cl #:clansi #:clabber.widgets)
+  (:use #:cl #:charmed #:clabber.widgets)
   (:export #:layout
            #:make-layout
            #:layout-compute
@@ -297,7 +297,7 @@
 
 (defpackage #:clabber
   (:use #:cl
-        #:clansi
+        #:charmed
         #:clabber.theme
         #:clabber.model
         #:clabber.widgets

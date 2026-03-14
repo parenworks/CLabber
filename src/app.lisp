@@ -89,7 +89,7 @@
                 (when (and (>= idx start) (< idx end))
                   (return (subseq text start end)))))))))))
 
-;;; copy-to-clipboard, open-url, find-urls, princ-with-urls are provided by CLansi
+;;; copy-to-clipboard, open-url, find-urls, princ-with-urls are provided by charmed
 
 (defun extract-selection-text (app y1 x1 y2 x2)
   "Extract selected text from screen text map between (y1,x1) and (y2,x2).
