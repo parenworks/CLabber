@@ -22,7 +22,9 @@ CLabber is a terminal UI (TUI) XMPP (Jabber) client written in Common Lisp.
 - IRC bridge support via Biboumi (clean nick display)
 
 *** UI & UX
+- Pure ANSI terminal UI via charmed (no ncurses dependency)
 - Widget-based TUI with roster, buffer bar, and split chat panes
+- Mouse text selection and clickable URLs
 - *Room participant list* with presence colors and keyboard navigation
 - *Emoji shortcode support* with interactive picker popup (type =:= to browse)
 - Theming system with colored nicks and customizable UI colors
@@ -42,19 +44,18 @@ CLabber is a terminal UI (TUI) XMPP (Jabber) client written in Common Lisp.
 ** Dependencies
 
 *** Core
-- =croatoan= - ncurses TUI bindings
+- =charmed= - Pure ANSI terminal rendering (no ncurses)
 - =bordeaux-threads= - Threading primitives
 - =alexandria= - Common utilities
-- =local-time= - Timestamp handling
-- =str= - String utilities
+- =cffi= - Foreign function interface (Signal protocol)
 
 *** XMPP Protocol (Native Implementation)
 - =usocket= - TCP socket handling
 - =cl+ssl= - TLS/STARTTLS support
-- =cxml= - XML parsing
-- =ironclad= - Cryptography for SASL
+- =ironclad= - Cryptography (SASL, OMEMO)
 - =cl-base64= - Base64 encoding
 - =babel= - Character encoding
+- =cl-ppcre= - Regular expressions
 
 ** Installation
 
@@ -187,33 +188,25 @@ See =docs/example-theme.lisp= for examples.
 clabber/
   clabber.asd
   src/
-    package.lisp
-    config.lisp
-    core/
-      classes.lisp      ; Core CLOS classes (buffer, roster-item, app-state, layout)
-      queue.lisp        ; Thread-safe event queue
-      events.lisp       ; Event classes + apply-event methods
-      commands.lisp     ; Command classes + execute methods
-      dispatch.lisp     ; Command execution
-      log.lisp          ; Logging utilities
+    packages.lisp       ; Package definitions
+    config.lisp         ; Account & app configuration
+    model.lisp          ; CLOS domain classes (buffer, contact, message)
+    theme.lisp          ; Theming system (Tokyo Night default)
+    widgets.lisp        ; Panel widgets — pure ANSI via charmed
+    layout.lisp         ; Frame computation & split panes
+    emoji.lisp          ; Emoji shortcode picker
+    http-upload.lisp    ; XEP-0363 file upload
+    app.lisp            ; Event loop & command dispatch
+    main.lisp           ; Entry point
     xmpp/
-      engine.lisp       ; XMPP connection management
-      handlers.lisp     ; Stanza handlers -> events
-      reconnect.lisp    ; Reconnection policy
-    ui/
-      classes.lisp      ; Widget base class
-      theme.lisp        ; Theme system
-      layout.lisp       ; Frame computation
-      keymap.lisp       ; Key bindings
-      tui.lisp          ; Main loop
-      widgets/
-        roster.lisp     ; Roster pane
-        bufferbar.lisp  ; Buffer bar
-        chat.lisp       ; Chat pane
-        status.lisp     ; Status bar
-        input.lisp      ; Input line
-    app/
-      main.lisp         ; Entry point
+      xml.lisp          ; XML parser & serialiser
+      stream.lisp       ; XMPP stream management
+      sasl.lisp         ; SASL authentication
+      stanza.lisp       ; Stanza types & parsing
+      connection.lisp   ; Connection lifecycle
+    crypto/
+      signal-ffi.lisp   ; Signal protocol FFI
+      omemo.lisp        ; OMEMO encryption layer
 #+end_src
 
 ** Roadmap
